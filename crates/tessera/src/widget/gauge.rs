@@ -267,6 +267,21 @@ mod tests {
     }
 
     #[test]
+    fn gpu_and_ram_capacity_share_gib_even_below_one_gib() {
+        let snapshot = HardwareSnapshot {
+            gpu: tessera_core::hardware::gpu::Snapshot {
+                memory_used_bytes: Some(7877 * (1 << 20) / 10),
+                ..Default::default()
+            },
+            memory_used_bytes: Some(121 * (1 << 30) / 10),
+            ..Default::default()
+        };
+        let readings = Reading::from_snapshot(&snapshot, false);
+        assert_eq!(readings[1].detail, "0.8 GiB");
+        assert_eq!(readings[2].detail, "12.1 GiB");
+    }
+
+    #[test]
     fn absent_gpu_is_removed_while_cpu_and_ram_keep_their_identity() {
         use tessera_core::hardware::gpu::Presence;
         assert_eq!(visible(Presence::Absent), &[0, 2]);

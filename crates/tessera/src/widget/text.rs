@@ -301,7 +301,7 @@ impl Renderer {
             GaugeField::Memory => (
                 Style::Detail,
                 Style::Detail,
-                &tessera_core::hardware::MEMORY_UNITS,
+                &[tessera_core::hardware::MEMORY_UNIT],
             ),
         };
         // Usage keeps its fixed columns. Bottom readouts use the actual unit
@@ -506,7 +506,7 @@ mod tests {
                 ["8%", "— °C"],
                 ["92%", "14.4 GiB"],
                 ["100%", "128.0 GiB"],
-                ["99%", "999.9 MiB"],
+                ["99%", "0.8 GiB"],
             ] {
                 let mut last_bottom = 0;
                 for (row, value) in values.iter().enumerate() {
@@ -563,13 +563,13 @@ mod tests {
                     1,
                     2.0,
                     &[
-                        "0.0 B",
+                        "0.0 GiB",
+                        "0.8 GiB",
                         "8.0 GiB",
                         "14.4 GiB",
                         "128.0 GiB",
-                        "999.9 MiB",
-                        "1.0 TiB",
-                        "16.0 EiB",
+                        "256.0 GiB",
+                        "1024.0 GiB",
                         "—",
                     ][..],
                 ),

@@ -32,24 +32,17 @@ pub fn format_temperature(celsius: Option<f64>) -> String {
     }
 }
 
-pub const MEMORY_UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+pub const MEMORY_UNIT: &str = "GiB";
 
-/// Keep at most three integer digits and one decimal place. Promote before
-/// rounding would produce 1000.0, while retaining exact binary conversion.
+/// GPU and RAM capacity always use GiB, rounded to one decimal place.
+/// Integer arithmetic preserves rounding at boundaries across the full u64 range.
 pub fn format_memory(bytes: Option<u64>) -> String {
     let Some(bytes) = bytes else {
         return "—".into();
     };
-    let scaled = u128::from(bytes) * 10;
-    let mut divisor = 1_u128;
-    for unit in MEMORY_UNITS {
-        let tenths = (scaled + divisor / 2) / divisor;
-        if tenths < 10_000 || unit == "EiB" {
-            return format!("{}.{:01} {unit}", tenths / 10, tenths % 10);
-        }
-        divisor *= 1024;
-    }
-    unreachable!("u64 byte counts fit in EiB")
+    const BYTES_PER_GIB: u128 = 1 << 30;
+    let tenths = (u128::from(bytes) * 10 + BYTES_PER_GIB / 2) / BYTES_PER_GIB;
+    format!("{}.{:01} {MEMORY_UNIT}", tenths / 10, tenths % 10)
 }
 
 pub struct TemperatureSensor {
@@ -129,44 +122,45 @@ mod tests {
     }
 
     #[test]
-    fn gauge_details_fit_compact_units_and_promote_rounding_boundaries() {
+    fn memory_always_uses_gib_with_one_decimal_place() {
         let gib = 1_u64 << 30;
-        assert_eq!(format_memory(None), "—");
-        assert_eq!(format_memory(Some(0)), "0.0 B");
-        assert_eq!(format_memory(Some(gib * 5 / 2)), "2.5 GiB");
-        assert_eq!(format_memory(Some(gib * 16)), "16.0 GiB");
-        assert_eq!(format_memory(Some(gib * 10 - 1)), "10.0 GiB");
-        assert_eq!(format_memory(Some(gib * 144 / 10)), "14.4 GiB");
         let mib = 1_u64 << 20;
-        assert_eq!(format_memory(Some(1023 * mib + 6 * mib / 10)), "1.0 GiB");
-        assert_eq!(format_memory(Some(gib - 1)), "1.0 GiB");
-        assert_eq!(format_memory(Some(u64::MAX)), "16.0 EiB");
-        assert_eq!(format_temperature(Some(52.4)), "52 °C");
-        for value in [None, Some(0.0), Some(f64::NAN), Some(150.0)] {
-            assert_eq!(format_temperature(value), "— °C");
+        for (bytes, expected) in [
+            (None, "—"),
+            (Some(0), "0.0 GiB"),
+            (Some(1), "0.0 GiB"),
+            (Some(7877 * mib / 10), "0.8 GiB"),
+            (Some(gib - 1), "1.0 GiB"),
+            (Some(gib * 5 / 2), "2.5 GiB"),
+            (Some(gib * 144 / 10), "14.4 GiB"),
+            (Some(gib * 16), "16.0 GiB"),
+            (Some(gib * 1024), "1024.0 GiB"),
+            (Some(u64::MAX), "17179869184.0 GiB"),
+        ] {
+            assert_eq!(format_memory(bytes), expected);
         }
     }
 
     #[test]
-    fn compact_memory_promotes_each_binary_unit_before_four_digit_rounding() {
-        let mut divisor = 1024_u64;
-        for pair in MEMORY_UNITS[1..].windows(2) {
-            let below = divisor * 999 + divisor * 94 / 100;
-            let boundary = (u128::from(divisor) * 99_995).div_ceil(100) as u64;
-            assert_eq!(format_memory(Some(below)), format!("999.9 {}", pair[0]));
-            assert_eq!(
-                format_memory(Some(boundary - 1)),
-                format!("999.9 {}", pair[0])
-            );
-            assert_eq!(format_memory(Some(boundary)), format!("1.0 {}", pair[1]));
-            assert_eq!(
-                format_memory(Some(divisor * 1021 + divisor / 5)),
-                format!("1.0 {}", pair[1])
-            );
-            divisor *= 1024;
+    fn gib_rounding_handles_zero_threshold_half_ties_and_integer_carry() {
+        let gib = 1_u64 << 30;
+        let first_tenth = gib.div_ceil(20);
+        assert_eq!(format_memory(Some(first_tenth - 1)), "0.0 GiB");
+        assert_eq!(format_memory(Some(first_tenth)), "0.1 GiB");
+        let tie = gib * 5 / 4;
+        assert_eq!(format_memory(Some(tie - 1)), "1.2 GiB");
+        assert_eq!(format_memory(Some(tie)), "1.3 GiB");
+        let carry = (gib * 199).div_ceil(20);
+        assert_eq!(format_memory(Some(carry - 1)), "9.9 GiB");
+        assert_eq!(format_memory(Some(carry)), "10.0 GiB");
+    }
+
+    #[test]
+    fn temperatures_keep_celsius_and_reject_missing_or_invalid_readings() {
+        assert_eq!(format_temperature(Some(52.4)), "52 °C");
+        for value in [None, Some(0.0), Some(f64::NAN), Some(150.0)] {
+            assert_eq!(format_temperature(value), "— °C");
         }
-        assert_eq!(format_memory(Some(999)), "999.0 B");
-        assert_eq!(format_memory(Some(1000)), "1.0 KiB");
     }
 
     #[test]

@@ -81,15 +81,15 @@ stay centered and percent signs keep a fixed right edge with a 1-DIP gutter.
 Bottom numbers align right toward the units, which align left, separated by a
 4-DIP gutter. Gutters round up to a physical pixel. Each bottom readout uses the
 actual number and unit widths to center the complete group beneath the arc,
-including after digit counts or units change. Missing and paused readings center
+including after digit counts change. Missing and paused readings center
 without reserving space for an absent unit. Readouts keep a narrower available
-width for temperatures than memory capacities. Bottom readings show CPU temperature in °C, GPU memory in use, or used physical memory in
-binary units with one decimal place (for example `52 °C`, `8.2 GiB`, `16.0 GiB`).
-Memory formatting keeps at most three integer digits. At a rounded value of
-1000.0 in one unit, it converts using the binary factor 1024 to the next unit;
-for example `1021.2 MiB` becomes `1.0 GiB`. Rounding uses integer arithmetic,
-including unit boundaries and the full `u64` byte range. CPU/GPU percentages and
-decimal network-rate conversion retain their existing precision.
+width for temperatures than memory capacities. Bottom readings show CPU temperature
+in °C; GPU memory in use and used physical memory always use GiB with one decimal
+place (for example `52 °C`, `0.8 GiB`, `16.0 GiB`). One GiB is 1,073,741,824 bytes;
+readings below one GiB stay in GiB, and larger readings never promote to TiB.
+Rounding uses integer arithmetic across the full `u64` byte range, including
+half-tenths and carry boundaries. CPU/GPU percentages and decimal network-rate
+conversion retain their existing precision.
 The CPU arc is sky blue, GPU is violet, and RAM is mint green, with text/track contrast adjusted
 to Windows' light/dark taskbar
 preference. Each hardware section reserves 48 DIP for a 40-DIP gauge; changing
