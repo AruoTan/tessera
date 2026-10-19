@@ -44,19 +44,24 @@ impl AdapterId {
     }
 }
 
-/// Add different processes on the *same* engine, then take the busiest engine.
-/// Neither independent engines nor different physical GPUs are additive.
-pub fn busiest(
-    values: &[(String, f64)],
-    hardware_luids: &BTreeSet<u64>,
-    previous: Option<AdapterId>,
-) -> Option<(AdapterId, f64)> {
-    // Compact records avoid one tree allocation per process/engine and two
-    // further maps for aggregation. Instance names stay borrowed from the caller.
-    let mut processes = Vec::new();
-    for (name, value) in values {
-        if !value.is_finite() || *value < 0.0 {
-            continue;
+/// Compact records reused between collections; PDH instance names are never retained.
+#[derive(Default)]
+pub struct EngineSamples {
+    processes: Vec<((AdapterId, u32, u32), f64)>,
+}
+
+impl EngineSamples {
+    /// Start a new interval, retaining normal capacity but releasing large bursts.
+    pub fn clear(&mut self) {
+        if self.processes.capacity() > self.processes.len().max(256) * 4 {
+            self.processes.shrink_to(self.processes.len().max(256));
+        }
+        self.processes.clear();
+    }
+
+    pub fn push(&mut self, name: &str, value: f64, hardware_luids: &BTreeSet<u64>) {
+        if !value.is_finite() || value < 0.0 {
+            return;
         }
         let parsed = (|| {
             let mut parts = name.split('_');
@@ -73,59 +78,98 @@ pub fn busiest(
             Some((adapter, engine, pid))
         })();
         if let Some(key) = parsed {
-            processes.push((key, *value));
+            self.processes.push((key, value));
         }
     }
-    processes.sort_unstable_by_key(|&(key, _)| key);
-    processes.dedup_by(|a, b| {
-        if a.0 != b.0 {
-            return false;
-        }
-        b.1 = b.1.max(a.1);
-        true
-    });
-    processes
-        .chunk_by(|a, b| a.0.0 == b.0.0)
-        .map(|adapter| {
-            let percent = adapter
-                .chunk_by(|a, b| a.0.1 == b.0.1)
-                .map(|engine| {
-                    engine
-                        .iter()
-                        .map(|(_, value)| value)
-                        .sum::<f64>()
-                        .min(100.0)
-                })
-                .fold(0.0_f64, f64::max);
-            (adapter[0].0.0, percent)
-        })
-        .max_by(|a, b| {
-            a.1.total_cmp(&b.1)
-                .then_with(|| (Some(a.0) == previous).cmp(&(Some(b.0) == previous)))
-                .then_with(|| b.0.cmp(&a.0))
-        })
+
+    /// Add processes on the same engine, then select the busiest engine/GPU.
+    pub fn busiest(&mut self, previous: Option<AdapterId>) -> Option<(AdapterId, f64)> {
+        self.processes.sort_unstable_by_key(|&(key, _)| key);
+        self.processes.dedup_by(|a, b| {
+            if a.0 != b.0 {
+                return false;
+            }
+            b.1 = b.1.max(a.1);
+            true
+        });
+        self.processes
+            .chunk_by(|a, b| a.0.0 == b.0.0)
+            .map(|adapter| {
+                let percent = adapter
+                    .chunk_by(|a, b| a.0.1 == b.0.1)
+                    .map(|engine| {
+                        engine
+                            .iter()
+                            .map(|(_, value)| value)
+                            .sum::<f64>()
+                            .min(100.0)
+                    })
+                    .fold(0.0_f64, f64::max);
+                (adapter[0].0.0, percent)
+            })
+            .max_by(|a, b| {
+                a.1.total_cmp(&b.1)
+                    .then_with(|| (Some(a.0) == previous).cmp(&(Some(b.0) == previous)))
+                    .then_with(|| b.0.cmp(&a.0))
+            })
+    }
 }
 
-/// Read exactly the selected physical adapter. Duplicate records are not summed.
-pub fn memory(values: &[(String, f64)], selected: AdapterId) -> Option<u64> {
-    values
-        .iter()
-        .filter_map(|(name, value)| {
-            let mut parts = name.split('_');
-            let adapter = AdapterId::parse(&mut parts)?;
-            (adapter == selected
-                && parts.next().is_none()
-                && value.is_finite()
-                && *value >= 0.0
-                && *value < u64::MAX as f64)
-                .then_some(*value as u64)
-        })
-        .max()
+/// Read one adapter-memory record; callers take the maximum across duplicates.
+pub fn memory_sample(name: &str, value: f64, selected: AdapterId) -> Option<u64> {
+    let mut parts = name.split('_');
+    let adapter = AdapterId::parse(&mut parts)?;
+    (adapter == selected
+        && parts.next().is_none()
+        && value.is_finite()
+        && value >= 0.0
+        && value < u64::MAX as f64)
+        .then_some(value as u64)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn busiest(
+        values: &[(String, f64)],
+        hardware: &BTreeSet<u64>,
+        previous: Option<AdapterId>,
+    ) -> Option<(AdapterId, f64)> {
+        let mut samples = EngineSamples::default();
+        for (name, value) in values {
+            samples.push(name, *value, hardware);
+        }
+        samples.busiest(previous)
+    }
+
+    fn memory(values: &[(String, f64)], selected: AdapterId) -> Option<u64> {
+        values
+            .iter()
+            .filter_map(|(name, value)| memory_sample(name, *value, selected))
+            .max()
+    }
+
+    #[test]
+    fn reused_samples_exclude_previous_intervals_and_release_burst_capacity() {
+        let hardware = BTreeSet::from([10]);
+        let mut samples = EngineSamples::default();
+        let (mut name, value) = engine(10, 0, 0, 1, "3D", 70.0);
+        samples.push(&name, value, &hardware);
+        // A native reader reuses the name buffer immediately after each callback.
+        name.clear();
+        assert_eq!(samples.busiest(None), Some((id(10, 0), 70.0)));
+        let capacity = samples.processes.capacity();
+        samples.clear();
+        assert_eq!(samples.busiest(None), None);
+        assert_eq!(samples.processes.capacity(), capacity);
+        let (name, value) = engine(10, 0, 0, 2, "3D", 5.0);
+        samples.push(&name, value, &hardware);
+        assert_eq!(samples.busiest(None), Some((id(10, 0), 5.0)));
+        samples.processes.reserve(16_384);
+        samples.clear();
+        assert!(samples.processes.capacity() <= 256);
+    }
 
     fn engine(
         luid: u32,

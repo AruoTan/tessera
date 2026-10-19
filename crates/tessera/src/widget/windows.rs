@@ -1,5 +1,6 @@
 //! Layered taskbar child with DirectWrite text on its own native window thread.
 use super::{
+    bitmap::Bitmap,
     gauge::{self, Palette, Reading as GaugeReading},
     icons::{Icons, icon_size},
     presentation::{Presentation, TaskbarIdentity},
@@ -11,7 +12,6 @@ use crate::state::AppState;
 use std::{
     cell::{Cell, RefCell},
     ffi::c_void,
-    mem::size_of,
     ptr::{null, null_mut},
     sync::{atomic::Ordering, mpsc},
     thread,
@@ -100,6 +100,7 @@ struct Context {
     sync_queued: Cell<bool>,
     dpi: Cell<u32>,
     text: RefCell<Renderer>,
+    bitmap: RefCell<Option<Bitmap>>,
     text_settings_changed: Cell<bool>,
     palette: Cell<Palette>,
     columns: Cell<Option<Columns>>,
@@ -187,6 +188,7 @@ unsafe fn run(
             sync_queued: Cell::new(false),
             dpi: Cell::new(0),
             text: RefCell::new(text),
+            bitmap: RefCell::new(None),
             text_settings_changed: Cell::new(false),
             palette: Cell::new(Palette::new(taskbar_dark_mode())),
             columns: Cell::new(None),
@@ -1111,7 +1113,8 @@ fn frame(
     columns: Columns,
     width: i32,
     height: i32,
-) -> windows::core::Result<Vec<u32>> {
+    pixels: &mut [u32],
+) -> windows::core::Result<()> {
     let mut text = context.text.borrow_mut();
     if context.text_settings_changed.get() {
         text.refresh_rendering_params()?;
@@ -1178,11 +1181,10 @@ fn frame(
             palette.label(column, reading.value == "Ⅱ"),
         )?);
     }
-    let mut pixels = vec![0; width as usize * height as usize];
-    text.render((width as u32, height as u32), &runs, &mut pixels)?;
+    text.render((width as u32, height as u32), &runs, pixels)?;
     if let Some(icons) = context.icons.borrow().as_ref() {
         icons.paint(
-            &mut pixels,
+            pixels,
             width as usize,
             height as usize,
             columns.padding as usize,
@@ -1191,7 +1193,7 @@ fn frame(
     }
     for (slot, &column) in content.visible.iter().enumerate() {
         gauge::paint(
-            &mut pixels,
+            pixels,
             (width as usize, height as usize),
             (
                 columns.hardware_left(slot).max(0) as usize,
@@ -1203,13 +1205,13 @@ fn frame(
             palette,
         );
     }
-    make_hit_testable(&mut pixels);
-    Ok(pixels)
+    make_hit_testable(pixels);
+    Ok(())
 }
 
 unsafe fn render(hwnd: HWND, context: &Context) {
-    // SAFETY: every DC/bitmap selection is paired on this owning thread.
-    // A 32-bit top-down DIB supplies premultiplied alpha to UpdateLayeredWindow.
+    // SAFETY: the cached top-down DIB and DC belong to this window thread.
+    // DirectWrite copies into its pixels; UpdateLayeredWindow consumes them synchronously.
     unsafe {
         if context.content.borrow().is_none() {
             return;
@@ -1226,41 +1228,31 @@ unsafe fn render(hwnd: HWND, context: &Context) {
         if width <= 0 || height <= 0 {
             return;
         }
-        let pixels = match frame(context, columns, width, height) {
-            Ok(pixels) => pixels,
-            Err(error) => {
-                context.dirty.set(true);
-                eprintln!("Cannot render taskbar text: {error}");
-                return;
-            }
+        context.dirty.set(true);
+        // Native presentation can re-enter the window procedure. Leave the frame
+        // dirty for a later refresh instead of borrowing the active surface twice.
+        let Ok(mut cached) = context.bitmap.try_borrow_mut() else {
+            return;
         };
-        let dc = CreateCompatibleDC(null_mut());
-        if dc.is_null() {
+        if cached
+            .as_ref()
+            .is_none_or(|bitmap| bitmap.size() != (width, height))
+        {
+            // Drop the previous allocation before creating a surface at a new DPI/size.
+            *cached = None;
+            match Bitmap::new(width, height) {
+                Ok(bitmap) => *cached = Some(bitmap),
+                Err(error) => {
+                    eprintln!("Cannot create taskbar surface: {error}");
+                    return;
+                }
+            }
+        }
+        let bitmap = cached.as_mut().unwrap();
+        if let Err(error) = frame(context, columns, width, height, bitmap.pixels_mut()) {
+            eprintln!("Cannot render taskbar text: {error}");
             return;
         }
-        let info = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width,
-                biHeight: -height,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut bits = null_mut();
-        let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
-        if bitmap.is_null() || bits.is_null() {
-            if !bitmap.is_null() {
-                DeleteObject(bitmap);
-            }
-            DeleteDC(dc);
-            return;
-        }
-        let previous_bitmap = SelectObject(dc, bitmap);
-        std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u32>(), pixels.len());
         let source = POINT::default();
         let size = SIZE {
             cx: width,
@@ -1279,7 +1271,7 @@ unsafe fn render(hwnd: HWND, context: &Context) {
             // pptDst null avoids racing Explorer's animation with stale screen bounds.
             null(),
             &size,
-            dc,
+            bitmap.dc(),
             &source,
             0,
             &blend,
@@ -1287,9 +1279,11 @@ unsafe fn render(hwnd: HWND, context: &Context) {
         );
         // Retry on the next refresh if Explorer/display recreation interrupted presentation.
         context.dirty.set(presented == 0);
-        SelectObject(dc, previous_bitmap);
-        DeleteObject(bitmap);
-        DeleteDC(dc);
+        if presented == 0 {
+            // A display/Explorer reset can invalidate a cached native DC. Rebuild
+            // it on retry instead of repeatedly submitting the same failed surface.
+            *cached = None;
+        }
     }
 }
 

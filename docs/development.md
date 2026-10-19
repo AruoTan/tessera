@@ -95,7 +95,10 @@ Windows packaging uses `packaging/build-installer.ps1` and the MSVC toolchain,
 with outputs in `dist/windows-msvc/`. The NSIS definition is
 `packaging/windows/installer.nsi`; both packaging scripts use the application icon
 from `crates/tessera/assets/icons/Tessera.ico`. The matching PNG artwork is kept
-alongside it as `tessera.png`; Windows builds embed only the ICO file.
+alongside it as `tessera.png`; Windows builds embed only the ICO file. Its 256-pixel
+frame uses lossless PNG compression; the five smaller frames remain uncompressed
+32-bit bitmaps. All six resolutions and their original RGBA pixels are preserved.
+This follows the [Windows icon compression guidance](https://learn.microsoft.com/en-us/windows/win32/uxguide/vis-icons).
 
 ## Build with GitHub Actions
 

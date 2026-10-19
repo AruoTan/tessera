@@ -1,4 +1,7 @@
 #[cfg(windows)]
+mod bitmap;
+
+#[cfg(windows)]
 mod windows;
 
 #[cfg(windows)]

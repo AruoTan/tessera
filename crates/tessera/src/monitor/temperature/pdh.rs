@@ -6,7 +6,7 @@ use std::{
 use tessera_core::hardware::thermal::{ThermalUnit, ThermalZones};
 use windows_sys::{Win32::System::Performance::*, core::w};
 
-use super::super::pdh::values;
+use super::super::pdh::Array;
 
 #[derive(Default)]
 pub(super) struct Reader {
@@ -25,7 +25,7 @@ impl Reader {
                 self.query = Some(Query::new()?);
             }
             self.query
-                .as_ref()
+                .as_mut()
                 .expect("query initialized")
                 .read(&mut self.zones)
         })();
@@ -43,6 +43,7 @@ impl Reader {
 struct Query {
     handle: PDH_HQUERY,
     counters: Vec<(PDH_HCOUNTER, ThermalUnit)>,
+    array: Array,
 }
 
 impl Drop for Query {
@@ -65,6 +66,7 @@ impl Query {
             let mut query = Self {
                 handle,
                 counters: Vec::new(),
+                array: Array::default(),
             };
             for (path, unit) in [
                 (
@@ -88,7 +90,7 @@ impl Query {
         }
     }
 
-    fn read(&self, zones: &mut ThermalZones) -> Result<Option<f64>, u32> {
+    fn read(&mut self, zones: &mut ThermalZones) -> Result<Option<f64>, u32> {
         // SAFETY: all handles belong to this thread's live query.
         let status = unsafe { PdhCollectQueryData(self.handle) };
         if status != 0 {
@@ -96,14 +98,19 @@ impl Query {
         }
         let mut available = false;
         for &(counter, unit) in &self.counters {
-            let Ok(values) = values(counter) else {
+            let mut best = None;
+            if self
+                .array
+                .read(counter, |name, raw| {
+                    if let Some(value) = zones.read(name, raw, unit) {
+                        best = Some(best.map_or(value, |previous: f64| previous.max(value)));
+                    }
+                })
+                .is_err()
+            {
                 continue;
-            };
+            }
             available = true;
-            let best = values
-                .into_iter()
-                .filter_map(|(name, raw)| zones.read(&name, raw, unit))
-                .max_by(f64::total_cmp);
             // Prefer high precision; standard Temperature remains independently
             // readable when that counter is unsupported or only has placeholders.
             if best.is_some() {

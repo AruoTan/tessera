@@ -1,6 +1,6 @@
 //! Vendor-neutral WDDM counters on an isolated thread. Never open a D3D device
 //! or spawn a vendor CLI; driver/counter stalls cannot delay the other metrics.
-use super::pdh::values;
+use super::pdh::Array;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ptr::{null, null_mut},
@@ -155,6 +155,8 @@ struct Query {
     dedicated: Option<PDH_HCOUNTER>,
     shared: Option<PDH_HCOUNTER>,
     primed: bool,
+    array: Array,
+    samples: gpu::EngineSamples,
 }
 
 struct Adapter {
@@ -232,6 +234,8 @@ impl Query {
                 dedicated: None,
                 shared: None,
                 primed: false,
+                array: Array::default(),
+                samples: gpu::EngineSamples::default(),
             };
             let status = PdhAddEnglishCounterW(
                 handle,
@@ -275,14 +279,25 @@ impl Query {
             self.primed = true;
             return Ok(Snapshot::default());
         }
-        // Release engine names and samples before allocating memory-counter arrays.
-        let Some((adapter, percent)) =
-            gpu::busiest(&values(self.engines)?, &inventory.luids, *selected)
-        else {
+        self.samples.clear();
+        self.array.read(self.engines, |name, value| {
+            self.samples.push(name, value, &inventory.luids);
+        })?;
+        let Some((adapter, percent)) = self.samples.busiest(*selected) else {
             // Empty/invalid arrays are unavailable, never a fabricated idle zero.
             return Ok(Snapshot::default());
         };
-        let memory = |counter: Option<PDH_HCOUNTER>| gpu::memory(&values(counter?).ok()?, adapter);
+        let mut memory = |counter: Option<PDH_HCOUNTER>| {
+            let mut used = None;
+            self.array
+                .read(counter?, |name, value| {
+                    if let Some(value) = gpu::memory_sample(name, value, adapter) {
+                        used = Some(used.map_or(value, |previous: u64| previous.max(value)));
+                    }
+                })
+                .ok()?;
+            used
+        };
         // Adapter counters avoid shared-resource duplication in process counters.
         // Shared memory matters on integrated GPUs; missing is distinct from 0.
         let info = inventory

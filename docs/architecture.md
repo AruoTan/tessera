@@ -119,6 +119,9 @@ which assumes an appropriate opaque background. The WIC render target uses
 Direct2D software rendering for this small surface; this change does not introduce
 a GPU device or capture/repaint the taskbar background. Text layouts have a bounded
 cache, and the transparent surface is reused until its physical dimensions change.
+The layered-window DC and top-down DIB are also reused until the widget size
+changes. Text copies directly into that DIB, avoiding an intermediate full-frame
+array and a second pixel copy; native GDI resources are released on resize or shutdown.
 The cache retains at most 32 recently used layouts, evicting old numeric readings
 individually while keeping frequently used units and labels. System text rendering
 parameters are created once per renderer and reused by each render target.
@@ -171,10 +174,13 @@ GPU gauge, with the previous GPU retained on exact ties. Independent engines,
 linked physical GPUs, and separate adapters are never added together; percentages
 are bounded at 100%. This follows the busiest-engine approach described by
 [Microsoft](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/).
-Aggregation sorts compact process/engine records in place, merges duplicates
-using their maximum value, and reduces contiguous groups without intermediate
-trees. Engine samples are released before reading GPU memory counters to reduce
-overlapping temporary allocations.
+Counter arrays are consumed through callbacks using one reusable UTF-8 name buffer;
+no collection of owned instance-name strings is created. Aggregation reuses compact
+process/engine records, sorts them in place, merges duplicates using their maximum
+value, and reduces contiguous groups without intermediate trees. Normal PDH buffer
+capacity is reused across collections, while buffers exceeding 256 KiB are released
+after each read. Compact record capacity shrinks after a large process-count drop.
+GPU memory counters are reduced directly without an intermediate result vector.
 
 The bottom GPU readout shows **dedicated + shared GPU memory in use** on the
 same selected physical GPU, in binary units with one decimal place. Shared memory
