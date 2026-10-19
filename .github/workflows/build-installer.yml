@@ -1,0 +1,67 @@
+name: Build Installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tessera-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_BUILD_JOBS: "4"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Rust dependencies and compiled release crates
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          shared-key: windows-installer
+
+      - name: Ensure NSIS is installed
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
+            choco install nsis --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      # Full desktop tests and Clippy run in ci.yml. Avoid compiling the entire
+      # desktop dependency tree in both debug and release in this packaging job.
+      - name: Check formatting and test core
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p tessera-core --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build unsigned Windows x64 installer
+        run: ./packaging/build-installer.ps1
+
+      - name: Upload unsigned installer, portable ZIP, and checksums
+        uses: actions/upload-artifact@v7
+        with:
+          name: Tessera-windows-x64-unsigned
+          path: dist/windows-msvc/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

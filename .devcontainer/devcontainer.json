@@ -1,0 +1,22 @@
+{
+  "name": "Tessera Rust",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "stable",
+      "profile": "minimal"
+    }
+  },
+  "remoteUser": "vscode",
+  "postCreateCommand": "rustup target add x86_64-pc-windows-gnu && cargo fetch --locked",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer"
+      ]
+    }
+  }
+}

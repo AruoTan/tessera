@@ -1,0 +1,35 @@
+name: Bug Report
+description: Report a problem in Tessera
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check README.md for supported features and known limitations before reporting a problem.
+        Remove personal information before attaching logs or screenshots.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and build
+      description: Run winver to find these details.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce, expected result, and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Display and network setup
+      description: Include display scaling, taskbar auto-hide, and VPN or virtual adapters if relevant. Do not include IP addresses or other private identifiers.

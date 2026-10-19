@@ -1,0 +1,3 @@
+[build]
+# Limit memory consumption on small development machines.
+jobs = 2

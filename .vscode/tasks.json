@@ -1,0 +1,28 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Rust: run Windows app",
+      "type": "shell",
+      "command": "cargo run -p tessera --locked",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Rust: test core",
+      "type": "shell",
+      "command": "cargo test -p tessera-core --locked",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$rustc"],
+      "group": "test"
+    },
+    {
+      "label": "Rust: package Windows (container)",
+      "type": "shell",
+      "command": "bash ./packaging/build-installer.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$rustc"],
+      "group": "build"
+    }
+  ]
+}
