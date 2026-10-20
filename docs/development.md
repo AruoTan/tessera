@@ -19,7 +19,7 @@ cargo run -p tessera --locked
 
 The settings window appears on first launch. Subsequently, double-click the
 readout with the left mouse button to open Settings. Right-click anywhere in the
-readout for **暂停监控** / **继续监控** and **退出**. The menu has no Settings item,
+readout for **固定位置** / **取消固定**, **暂停监控** / **继续监控**, and **退出**. The menu has no Settings item,
 and the application has no notification-area icon. Closing Settings leaves the
 application running; use **退出** in the readout's context menu to exit.
 The settings window includes **网络配置**, **任务栏位置**, and **关于**.
@@ -170,8 +170,15 @@ the state-machine tests cannot establish frame alignment of Explorer rendering.
 For dragging, also verify grabbing blank space between the rows, horizontal and
 vertical taskbars, both ends of the available track, release outside the readout,
 interrupted capture, left-double-click to open Settings, right-click for
-pause/resume and exit, restart persistence, and saving an already-open settings
+lock/unlock, pause/resume and exit, restart persistence, and saving an already-open settings
 form after repositioning. The readout must not snap back during sampling or after Save.
+When locked, text, icons, and blank areas must all use the normal arrow cursor
+and refuse dragging, while double-click Settings and the context menu still work.
+Check the closed/open lock icons at different DPI scales and in high-contrast mode.
+Verify lock persistence after restarting Tessera and Explorer, and that saving
+an already-open settings form cannot undo either locking or unlocking.
+Unlocking must immediately restore dragging and the move cursor. An explicit
+position reset remains available while locked and preserves the lock.
 Check right-clicking text and blank space: only the readout menu should appear,
 without opening Settings or the taskbar menu. Verify menu cancellation with Escape
 and outside clicks, and that sampling continues while the menu is open. Check

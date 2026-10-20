@@ -25,19 +25,32 @@ impl AppState {
         }
     }
 
-    /// Form saves must not undo a position dragged while the form was open.
+    /// Form saves must not undo position or lock changes made from the widget.
     pub fn save_settings(&self, mut settings: Settings) -> Result<Settings, String> {
         let mut current = self.settings.write().map_err(|e| e.to_string())?;
         settings.taskbar_position = current.taskbar_position;
         settings.offset_x = current.offset_x;
+        settings.position_locked = current.position_locked;
         tessera_core::config::save(&self.settings_path, &settings)?;
         *current = settings.clone();
         Ok(settings)
     }
 
+    pub fn toggle_position_lock(&self) -> Result<(), String> {
+        let mut current = self.settings.write().map_err(|e| e.to_string())?;
+        let mut settings = current.clone();
+        settings.position_locked = !settings.position_locked;
+        tessera_core::config::save(&self.settings_path, &settings)?;
+        *current = settings;
+        Ok(())
+    }
+
     pub fn set_widget_position(&self, position: Option<u16>) -> Result<(), String> {
         let mut current = self.settings.write().map_err(|e| e.to_string())?;
         let mut settings = current.clone();
+        if position.is_some() && settings.position_locked {
+            return Err("Unlock the widget position before dragging.".into());
+        }
         settings.taskbar_position = position;
         settings.offset_x = 0;
         tessera_core::config::save(&self.settings_path, &settings)?;
@@ -100,6 +113,43 @@ mod tests {
         assert_eq!(reset.taskbar_position, None);
         assert_eq!(reset.offset_x, 0);
         assert_eq!(reset.adapter.as_deref(), Some("Wi-Fi"));
+    }
+
+    #[test]
+    fn position_lock_persists_and_stale_forms_cannot_undo_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let state = AppState::new(Settings::default(), path.clone());
+        state.set_widget_position(Some(3_456)).unwrap();
+        let mut stale_form = state.settings.read().unwrap().clone();
+        state.toggle_position_lock().unwrap();
+        assert!(tessera_core::config::load(&path).unwrap().position_locked);
+        let previous = std::fs::read(&path).unwrap();
+        assert!(state.set_widget_position(Some(5_000)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), previous);
+        stale_form.adapter = Some("Wi-Fi".into());
+        let saved = state.save_settings(stale_form).unwrap();
+        assert!(saved.position_locked);
+        assert_eq!(saved.taskbar_position, Some(3_456));
+        // Explicitly restoring the default position remains available while locked.
+        state.set_widget_position(None).unwrap();
+        assert!(state.settings.read().unwrap().position_locked);
+        let stale_form = state.settings.read().unwrap().clone();
+        state.toggle_position_lock().unwrap();
+        assert!(!state.save_settings(stale_form).unwrap().position_locked);
+        state.set_widget_position(Some(5_000)).unwrap();
+        let saved = tessera_core::config::load(&path).unwrap();
+        assert!(!saved.position_locked);
+        assert_eq!(saved.taskbar_position, Some(5_000));
+        assert_eq!(saved.adapter.as_deref(), Some("Wi-Fi"));
+    }
+
+    #[test]
+    fn failed_lock_save_does_not_publish_unsaved_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(Settings::default(), dir.path().to_path_buf());
+        assert!(state.toggle_position_lock().is_err());
+        assert_eq!(*state.settings.read().unwrap(), Settings::default());
     }
 
     #[test]

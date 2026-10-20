@@ -13,7 +13,7 @@ and desktop validation, see [Development](development.md).
 - System-wide CPU, GPU, and physical memory usage, in three fixed-width sections to the right of network speeds.
 - A Windows taskbar readout with DirectWrite/Direct2D text on a dedicated native window thread.
 - Drag the readout along the taskbar; its position is remembered across restarts.
-- Right-click the readout for Pause/resume and Quit; left-double-click it to open Settings. The application has no notification-area icon.
+- Right-click the readout for Lock/unlock position, Pause/resume and Quit; left-double-click it to open Settings. The application has no notification-area icon.
 - A native Win32 settings window created on demand, using system fonts, keyboard navigation, and per-monitor DPI scaling. Closing it destroys the window while sampling continues.
 - Settings for adapter selection and taskbar position reset. Speeds always use bytes per second and two decimal places, with text adapting to the taskbar theme.
 - Validated settings saved atomically in `%APPDATA%\io.tessera\settings.json`.
@@ -46,7 +46,14 @@ both sides. Shorter units such as `B/s` give the number more room than `KB/s`;
 the number's center adjusts to that space while the units retain their shared
 right edge. Values and units can change without resizing the widget or shifting
 its taskbar position. The full readout,
-including blank column space, remains draggable.
+including blank column space, remains draggable while its position is unlocked.
+The context menu offers “固定位置” (Lock position) with a closed-lock icon, changing
+to “取消固定” (Unlock) with an open-lock icon when locked. Locking disables drag
+capture and uses the normal arrow cursor; double-click and right-click actions
+remain available. The lock persists across restarts. Settings saves preserve
+the current lock and dragged position; explicitly resetting the position remains
+available without unlocking. Menu icons are antialiased vectors rasterized at
+the native menu DPI in the system menu text color and released after dismissal.
 Before the first valid sample, both rows use formatted zero placeholders with
 two decimal places (`0.00` and `B/s` beside each icon).
 Valid samples replace the values using the same format; an unavailable adapter

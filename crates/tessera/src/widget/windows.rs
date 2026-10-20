@@ -622,7 +622,12 @@ unsafe extern "system" fn window_proc(
                     return 0;
                 }
                 WM_SETCURSOR if lparam as u16 == HTCLIENT as u16 => {
-                    SetCursor(LoadCursorW(null_mut(), IDC_SIZEALL));
+                    let cursor = if position_locked(&*pointer) {
+                        IDC_ARROW
+                    } else {
+                        IDC_SIZEALL
+                    };
+                    SetCursor(LoadCursorW(null_mut(), cursor));
                     return 1;
                 }
                 WM_LBUTTONDBLCLK => {
@@ -675,7 +680,19 @@ unsafe extern "system" fn window_proc(
     }
 }
 
+fn position_locked(context: &Context) -> bool {
+    context
+        .state
+        .settings
+        .read()
+        .map(|settings| settings.position_locked)
+        .unwrap_or(true)
+}
+
 unsafe fn begin_drag(hwnd: HWND, context: &Context) {
+    if position_locked(context) {
+        return;
+    }
     // SAFETY: all mouse and window APIs run on the owning window thread.
     unsafe {
         let mut cursor = POINT::default();
@@ -715,7 +732,7 @@ unsafe fn move_drag(hwnd: HWND, context: &Context) {
         let (Some(mut drag), Some(layout)) = (context.drag.get(), context.layout.get()) else {
             return;
         };
-        if GetCapture() != hwnd {
+        if position_locked(context) || GetCapture() != hwnd {
             cancel_drag(hwnd, context);
             return;
         }

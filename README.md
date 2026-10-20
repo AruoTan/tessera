@@ -7,7 +7,7 @@ and DirectWrite/Direct2D rendering. Current version: `0.1.0`.
 - CPU utilization and optional temperature, GPU utilization and memory usage, and physical RAM usage.
 - Automatic GPU detection with a compact CPU/RAM layout when no GPU is present.
 - A draggable taskbar widget that follows taskbar visibility and recovers after Explorer restarts.
-- Native settings for adapter selection and taskbar position; double-click the widget to open them, or right-click for pause/resume and exit.
+- Native settings for adapter selection and taskbar position; double-click the widget to open them, or right-click to lock/unlock its position, pause/resume, or exit.
 - System fonts, DPI-aware rendering, and automatic light/dark taskbar colors.
 
 The widget targets the primary taskbar on Windows 10 and 11 (x64). CPU temperature

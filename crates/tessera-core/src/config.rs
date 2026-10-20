@@ -14,6 +14,8 @@ pub struct Settings {
     /// Position along the usable taskbar, in ten-thousandths (0 = start, 10000 = tray).
     /// None uses automatic placement and the horizontal offset.
     pub taskbar_position: Option<u16>,
+    /// Prevent mouse dragging without changing the saved taskbar position.
+    pub position_locked: bool,
 }
 
 impl Default for Settings {
@@ -23,6 +25,7 @@ impl Default for Settings {
             adapter: None,
             offset_x: 0,
             taskbar_position: None,
+            position_locked: false,
         }
     }
 }
@@ -95,6 +98,7 @@ mod tests {
         assert_eq!(load(&path).unwrap().adapter.as_deref(), Some("Wi-Fi"));
         assert_eq!(load(&path).unwrap().offset_x, 0);
         assert_eq!(load(&path).unwrap().taskbar_position, None);
+        assert!(!load(&path).unwrap().position_locked);
     }
 
     #[test]
@@ -105,6 +109,7 @@ mod tests {
         save(&path, &settings).unwrap();
         settings.adapter = Some("Ethernet".into());
         settings.taskbar_position = Some(4_321);
+        settings.position_locked = true;
         save(&path, &settings).unwrap();
         assert_eq!(load(&path).unwrap(), settings);
         let previous = fs::read(&path).unwrap();
