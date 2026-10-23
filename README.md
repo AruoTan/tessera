@@ -1,17 +1,22 @@
 # Tessera
 
-A Windows taskbar monitor written entirely in Rust, using native Win32 controls
+A Windows taskbar monitor written entirely in Rust, using native Win32 settings, a XAML context menu styled after Windows 11,
 and DirectWrite/Direct2D rendering. Current version: `0.1.0`.
 
 - Live upload/download speeds from physical Ethernet and Wi-Fi adapters, sampled every second.
 - CPU utilization and optional temperature, GPU utilization and memory usage, and physical RAM usage.
 - Automatic GPU detection with a compact CPU/RAM layout when no GPU is present.
 - A draggable taskbar widget that follows taskbar visibility and recovers after Explorer restarts.
-- Native settings for adapter selection and taskbar position; double-click the widget to open them, or right-click to lock/unlock its position, pause/resume, or exit.
+- Native settings for adapter selection and taskbar position; double-click the widget to open them, or use the XAML MenuFlyout to lock/unlock its position, pause/resume, or exit.
 - System fonts, DPI-aware rendering, and automatic light/dark taskbar colors.
 
-The widget targets the primary taskbar on Windows 10 and 11 (x64). CPU temperature
+The widget targets the primary taskbar on Windows 10 1903 or newer and Windows 11 (x64). CPU temperature
 availability depends on firmware or a compatible local hardware-monitor provider.
+The context menu styles Windows' built-in XAML controls with 8-DIP rounded corners,
+Fluent Desktop Acrylic (`HostBackdrop`) material, compact rows and system font icons. It follows the system
+light/dark theme and animation preference, including a separate edge-shadow reveal after card entry completes;
+high contrast retains the inbox style.
+It initializes on the first right-click and needs no separate Windows App SDK runtime.
 Settings are stored at `%APPDATA%\io.tessera\settings.json`.
 
 ## Develop on Windows

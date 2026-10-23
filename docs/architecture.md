@@ -47,13 +47,125 @@ the number's center adjusts to that space while the units retain their shared
 right edge. Values and units can change without resizing the widget or shifting
 its taskbar position. The full readout,
 including blank column space, remains draggable while its position is unlocked.
-The context menu offers “固定位置” (Lock position) with a closed-lock icon, changing
-to “取消固定” (Unlock) with an open-lock icon when locked. Locking disables drag
+The context menu offers “固定位置” (Lock position) with the system pin icon, changing
+to “取消固定” (Unlock) with the system unpin icon when locked. Locking disables drag
 capture and uses the normal arrow cursor; double-click and right-click actions
 remain available. The lock persists across restarts. Settings saves preserve
 the current lock and dragged position; explicitly resetting the position remains
-available without unlocking. Menu icons are antialiased vectors rasterized at
-the native menu DPI in the system menu text color and released after dismissal.
+available without unlocking.
+
+## XAML context menu
+
+The menu is an actual [`Windows.UI.Xaml.Controls.MenuFlyout`](https://learn.microsoft.com/en-us/uwp/api/windows.ui.xaml.controls.menuflyout),
+with standard `MenuFlyoutItem`, `MenuFlyoutSeparator` and `FontIcon` objects.
+`resources/windows/context-menu.xaml` supplies an 8-DIP rounded presenter,
+Fluent Desktop Acrylic (`HostBackdrop`) material with balanced tint and luminosity opacity
+that naturally responds to light and dark underlying application surfaces, a subtle outline,
+compact 32-DIP rows and 12-DIP text. A separate hollow edge-shadow image sits
+behind the rounded card. Both the presenter's automatic shadow and the card's
+`ThemeShadow` are absent. A custom item template supplies icon/text columns and
+pointer/pressed/disabled states.
+Icons use 16-DIP Segoe Fluent Icons with Segoe MDL2 Assets as the Windows 10 fallback.
+XAML supplies accessibility, keyboard navigation and popup placement;
+XAML storyboards animate the card motion and the edge image's opacity. No HMENU, bitmap
+menu icons, or shell-private interface is used.
+This is the Windows inbox XAML control, not a claim to call Explorer's private
+tray-menu implementation or to reproduce its exact appearance on every release.
+
+The first right-click starts a dedicated STA menu thread. It initializes
+`WindowsXamlManager` and attaches `DesktopWindowXamlSource` to a tiny native
+anchor, using the documented [XAML Islands hosting API](https://learn.microsoft.com/en-us/windows/uwp/xaml-islands/host-standard-control-with-xaml-islands-cpp).
+The anchor's own region is empty; the MenuFlyout is explicitly unconstrained and
+uses the framework's separate top-level popup. Presentation waits for `Loaded`
+and assigns the anchor's actual `XamlRoot` before `ShowAt`. Physical cursor
+coordinates position the anchor, while XAML handles popup DPI/layout.
+`IDesktopWindowXamlSourceNative2.PreTranslateMessage` receives the worker's
+messages so XAML handles keyboard input.
+
+Each opening creates fresh menu items, reads lock/pause state and selects the
+Windows system light/dark theme. Styles are loaded from embedded markup on the
+menu STA, with palette references resolved locally rather than modifying global
+resources. In high contrast, custom styles are bypassed so colors, outlines
+and item templates remain framework-owned.
+`UISettings.AnimationsEnabled` controls all animation; the app never changes the
+system-wide setting. Inbox `FlyoutBase.Opened` means the presenter is loaded,
+not that its entrance transition has completed. For the custom template,
+`AreOpenCloseAnimationsEnabled` is false and XAML `Storyboard` owns the card's
+entry/exit motion. `DoubleAnimation` targets the card opacity and its ordinary
+`TranslateTransform.Y`. Completion is observed through the storyboard's own
+`Completed` event; no handed-out Composition visual or custom visual property
+is involved. Resting dependency-property values match each final frame, and
+`FillBehavior.Stop` plus explicit cancellation prevents retained animation clocks.
+The first item's `Loaded` message starts a 200-ms upward slide and fade with
+the shadow hidden. Only the entry storyboard's `Completed` callback can start the
+400-ms opacity reveal on the separate shadow image. The Acrylic surface stays
+at Z=0 with unchanged material/opacity during the entire shadow reveal. There
+is no timer racing the framework's transition, and no shadow depth animation
+on the material itself.
+
+`menu/shadow.rs` generates a 64×64 premultiplied BGRA atlas (16 KiB). Its original
+rounded-card footprint is completely transparent. The shadow starts at the card's
+outer edge without an expanded cutout that would expose a bright backdrop seam;
+corner antialiasing is confined to the first half pixel outside. A Gaussian edge
+with 4.5-DIP blur and downward offset gives the sides and bottom a wider falloff
+with no shadow above the top edge. Both side shadows have mirrored 45-degree
+upper cutoffs: each DIP outward moves the start one DIP downward, with a 2-DIP
+smooth transition and the existing corner fade. The complete diagonal caps stay
+inside the fixed nine-grid corner tiles, so resizing cannot flatten their slope.
+Both sides retain a 12-DIP reach; the bottom fades
+to zero over the target 12-DIP card/taskbar gap. Each tail eases smoothly to zero
+in its last two DIPs. Shadow amplitude is reduced by 20% after alpha quantization;
+the faintest nonzero tail pixels retain their positions, preserving the fade-out
+extent without changing the Gaussian falloff or geometry. The center tile is empty. XAML `Image.NineGrid` preserves
+corner/edge thickness while stretching to the menu dimensions. The image is inside a sized grid hosted by
+an absolute `Canvas`, so it cannot participate in the presenter's `DesiredSize`.
+The foreground border and its three menu items alone determine the menu size.
+`SizeChanged` updates only the decoration's bounds. Image width/height remain
+Auto so nine-grid rendering stays enabled. `WriteableBitmap.PixelBuffer` is filled once
+per opening; the temporary CPU pixels are then dropped. There is no added image
+file, decoder, native shadow window, or per-frame CPU rendering.
+The popup reserves a 14-DIP transparent gutter, which becomes fully transparent
+before its outer boundary. The image does not participate in hit testing.
+Moving only the anchor cannot enforce the visible gap: FlyoutBase can reposition
+the full presenter, including its shadow padding. After layout and before entry,
+`GetOpenPopupsForXamlRoot` selects only the popup whose child is this card's
+presenter. `TransformToVisual` measures the opaque bottom relative to that child;
+the island's actual screen origin and `XamlRoot.RasterizationScale` map the target
+12-DIP gap into `Popup.VerticalOffset`. XAML owns the resulting native window update.
+The transparent gutter may extend past the taskbar boundary without pushing the
+opaque card upward. If there is not enough room above the target, the framework's
+placement is retained. A placement error also retains the framework position and
+does not prevent card entry. High contrast retains native placement throughout.
+The presenter explicitly requests the light/dark palette's theme. With system
+animations disabled, card and shadow appear directly at rest. High contrast
+retains the framework's complete template, shadow and transitions. The minimum
+supported Windows version remains 10 1903.
+
+`Closing` defers dismissal for a 100-ms card fade. Beginning exit revokes the
+entry completion callback; queued entry messages are ignored while closing, so
+an interrupted opening cannot start a shadow during dismissal. The exit storyboard's
+completion permits `Hide`. A command is sent back to the main application only
+after XAML raises `Closed`. Animation setup failures fall back to static
+presentation or immediate closing rather than blocking menu actions.
+The anchor is placed at its final coordinates before `ShowAt`; there is no
+animation thread, popup HWND discovery or `SetWindowPos` on a framework-owned
+popup. Moving that popup independently caused it to jump back when XAML next
+updated its placement.
+Each opening tags callbacks with a generation so a delayed event from an old
+menu cannot close or select a new one. Closing releases the flyout and item
+event handlers. The STA thread and XAML source remain for subsequent openings
+until application shutdown; XAML can increase resident memory after first use.
+No memory-reduction claim is made for this control change.
+
+Windows 10 1903 (build 18362) or newer is required for this hosting path. The
+application manifest declares a tested version above the XAML Islands minimum.
+Windows supplies the runtime; installers and portable ZIPs do not bundle WinUI,
+Windows App SDK, .NET, or a browser. Microsoft's `windows` 0.37 bindings are
+pinned under the isolated `windows-xaml` dependency because later windows-rs
+releases removed inbox XAML projections. Monitoring and widget rendering retain
+the current bindings; only HWND/message values cross the binding boundary.
+Initialization/presentation failures report their HRESULT, rather than silently
+falling back to the old Win32 menu.
 Before the first valid sample, both rows use formatted zero placeholders with
 two decimal places (`0.00` and `B/s` beside each icon).
 Valid samples replace the values using the same format; an unavailable adapter
@@ -317,7 +429,11 @@ Pausing excludes paused traffic and the first interval after resuming.
 | `crates/tessera/src/widget/text.rs` | DirectWrite layouts, system fonts, and transparent Direct2D text rendering |
 | `crates/tessera/src/widget/windows.rs` | Native widget thread, layered presentation, taskbar ownership |
 | `crates/tessera/src/widget/startup.rs` | Bounded initial hardware warm-up, independent of network readiness |
-| `crates/tessera/src/desktop/windows.rs` | Native message loop, single instance, widget context menu and application lifecycle |
+| `crates/tessera/src/desktop/windows.rs` | Main message loop, single instance, menu action dispatch and application lifecycle |
+| `crates/tessera/src/desktop/menu.rs` | Context menu command labels, state and system icon selection |
+| `crates/tessera/src/desktop/menu/xaml.rs` | Lazy STA, XAML Islands host, real MenuFlyout controls and event lifecycle |
+| `crates/tessera/src/desktop/menu/appearance.rs` | Per-opening theme palette and embedded menu styles |
+| `crates/tessera/resources/windows/context-menu.xaml` | Rounded presenter, compact rows and separators |
 | `crates/tessera/src/desktop/settings.rs` | Win32 settings controls, adapter choices and license window |
 | `crates/tessera/build.rs` | Windows icon and manifest resources |
 | `crates/tessera/build/icons.rs` | Build-time SVG compilation into vector drawing commands |

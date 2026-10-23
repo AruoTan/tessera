@@ -76,7 +76,7 @@ in `dist/windows-gnu/`:
 - `checksums.txt`: SHA-256 hashes of the four files above.
 
 No Windows SDK, PowerShell or Wine is needed for cross-compilation or packaging.
-The portable executable requires Windows 10 or 11 and stores settings in the
+The portable executable requires Windows 10 1903 or newer, or Windows 11 and stores settings in the
 same roaming profile directory as the installed app. Test Windows desktop behavior
 on Windows; successful packaging does not verify Explorer integration.
 
@@ -136,7 +136,7 @@ The widget targets the primary taskbar. Settings currently use Simplified Chines
 There is no persistent measurement history, startup registration, or automatic
 update service. CPU temperature depends on available local sensor providers.
 
-Before releasing a build, validate Windows 10 and 11, mixed-DPI displays,
+Before releasing a build, validate Windows 10 1903+ and Windows 11, mixed-DPI displays,
 taskbar auto-hide, full-screen applications, Explorer restart, sleep/resume, adapter
 disconnect/reconnect, pause/resume, and installation/uninstallation.
 
@@ -174,7 +174,63 @@ lock/unlock, pause/resume and exit, restart persistence, and saving an already-o
 form after repositioning. The readout must not snap back during sampling or after Save.
 When locked, text, icons, and blank areas must all use the normal arrow cursor
 and refuse dragging, while double-click Settings and the context menu still work.
-Check the closed/open lock icons at different DPI scales and in high-contrast mode.
+The menu uses real inbox XAML `MenuFlyout` controls with system pin/unpin,
+pause/play and exit font icons. The custom XAML presenter uses 8-DIP rounded
+corners, Fluent Desktop Acrylic (`HostBackdrop`) material with an animated
+hollow edge shadow, a subtle outline
+and compact rows.
+Check that corners remain transparent and the first/last item highlights stay
+inside the rounded background. Inspect DPI scales, large system text, light/dark
+system themes and high contrast (which bypasses custom styling). Check
+card entry/exit and shadow animations with
+Windows animation effects both enabled and disabled. Compare opening with the
+system sound/network context menu, including the shadow that continues to
+appear only after the 200-ms card entry completes, followed by a 400-ms opacity
+reveal on the separate edge image. The shadow must remain absent throughout card movement;
+`Loaded`/`Opened` alone must not trigger it. On a static light desktop, compare
+the menu interior immediately after entry and after the shadow settles: its
+color must not get darker as the shadow appears. Inspect the hollow edge image:
+no shadow above the top edge, light sides, stronger bottom, smooth rounded corners, and fully
+transparent outer limits. No shadow pixels may cover the menu surface. The
+reserved gutter must not change the card's taskbar gap or introduce clipping.
+The bottom shadow should fade across that gap and disappear at the taskbar's
+upper edge; both sides should have a similarly extended fade rather than only
+a narrow dark outline. At the top of each side, check the mirrored 45-degree
+cutoff: the farther outward the shadow, the lower it starts, with a soft boundary.
+The diagonal must keep its angle at different menu sizes and DPI scales.
+Measure the opaque card's bottom (excluding the transparent shadow gutter) against
+the taskbar top at 100%, 125%, 150% and 200% scaling: the gap should be 12 DIP,
+rounded to physical pixels. Compare first/repeated openings and a secondary
+monitor with negative screen coordinates; the card must not jump after entry.
+The Windows smoke test checks the transformed visible bottom after the shadow
+starts, so changing only an anchor constant cannot satisfy it.
+The menu must remain compact: its height must equal the three row heights plus
+padding, border and shadow gutter. The image must never make it a large square.
+Verify both the card slide/fade and subsequent shadow fade on first and repeated
+openings; an animation initialization failure must not be mistaken for success.
+Compare light/dark themes and Windows animations disabled. Reopen and
+close quickly during the reveal to catch lingering shadows or stale callbacks.
+With Windows animations disabled the full shadow must appear immediately.
+After settling, move the pointer across the
+menu and widget, wait at least a second, and confirm there is no second jump
+or placement correction. With animations disabled the menu must appear directly
+at its final position. Verify arrow keys, Enter, Escape, outside-click dismissal,
+screen edges, and repeated opening/closing.
+After selecting an item, the action should run after the close animation.
+Sampling and widget updates must continue during first-use XAML initialization.
+The menu thread/XAML source are created on first use and retained until shutdown;
+compare memory before and after first use if measuring the cost.
+
+An opt-in smoke test exercises real XAML controls, popup state, close events and
+stale callback rejection on an interactive Windows desktop:
+
+```powershell
+cargo test -p tessera desktop_flyout_uses_system_controls --locked -- --ignored --test-threads=1
+```
+
+It is ignored in ordinary CI because hosted/server or noninteractive Windows
+sessions need not provide a usable inbox XAML desktop. Cross-compilation only
+checks the code and linking; it cannot verify appearance or animation frames.
 Verify lock persistence after restarting Tessera and Explorer, and that saving
 an already-open settings form cannot undo either locking or unlocking.
 Unlocking must immediately restore dragging and the move cursor. An explicit

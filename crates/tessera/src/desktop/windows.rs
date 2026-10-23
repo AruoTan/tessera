@@ -1,4 +1,4 @@
-use super::{menu_icon::MenuIcon, settings};
+use super::{menu, settings};
 use crate::{monitor, state::AppState, widget};
 use std::{
     cell::Cell,
@@ -11,7 +11,6 @@ use std::{
 use windows_sys::{
     Win32::{
         Foundation::*,
-        Graphics::Gdi::{COLOR_MENUTEXT, GetSysColor},
         System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
         UI::{Controls::*, HiDpi::*, WindowsAndMessaging::*},
     },
@@ -21,9 +20,6 @@ use windows_sys::{
 const OPEN_SETTINGS: u32 = WM_APP + 20;
 const OPEN_MENU: u32 = WM_APP + 21;
 const HOST_CLASS: windows_sys::core::PCWSTR = w!("TesseraRustApplication");
-const PAUSE: u32 = 2;
-const QUIT: u32 = 3;
-const POSITION_LOCK: u32 = 4;
 
 /// Only the window address crosses threads; all UI work stays on the main loop.
 #[derive(Clone, Copy)]
@@ -49,6 +45,7 @@ pub(super) struct Context {
     pub state: AppState,
     pub settings: settings::Window,
     host: Cell<HWND>,
+    menu: menu::Controller,
 }
 
 struct Instance(HANDLE);
@@ -100,6 +97,7 @@ impl Context {
             state,
             settings: settings::Window::default(),
             host: Cell::new(null_mut()),
+            menu: menu::Controller::default(),
         }
     }
 
@@ -112,83 +110,20 @@ impl Context {
     }
 
     fn menu(&self, x: i32, y: i32) {
-        // SAFETY: popup menu is created, tracked, and destroyed on this thread.
-        unsafe {
-            let menu = CreatePopupMenu();
-            if menu.is_null() {
-                return;
-            }
-            let position_locked = self
-                .state
-                .settings
-                .read()
-                .map(|settings| settings.position_locked)
-                .unwrap_or(true);
-            AppendMenuW(
-                menu,
-                MF_STRING,
-                POSITION_LOCK as usize,
-                if position_locked {
-                    w!("取消固定")
-                } else {
-                    w!("固定位置")
-                },
-            );
-            // Keep the premultiplied bitmap alive until the popup is destroyed.
-            // Use native menu text colors, including high-contrast themes.
-            let dpi = GetDpiForWindow(self.host.get()).max(96);
-            let size = GetSystemMetricsForDpi(SM_CXSMICON, dpi).max(16) as u32;
-            let icon = MenuIcon::new(position_locked, size, GetSysColor(COLOR_MENUTEXT));
-            if let Some(icon) = &icon {
-                let info = MENUITEMINFOW {
-                    cbSize: size_of::<MENUITEMINFOW>() as u32,
-                    fMask: MIIM_BITMAP,
-                    hbmpItem: icon.handle(),
-                    ..Default::default()
-                };
-                SetMenuItemInfoW(menu, POSITION_LOCK, 0, &info);
-            }
-            let paused = self
-                .state
-                .paused
-                .lock()
-                .map(|value| value.paused)
-                .unwrap_or(false);
-            AppendMenuW(
-                menu,
-                MF_STRING,
-                PAUSE as usize,
-                if paused {
-                    w!("继续监控")
-                } else {
-                    w!("暂停监控")
-                },
-            );
-            AppendMenuW(menu, MF_SEPARATOR, 0, null());
-            AppendMenuW(menu, MF_STRING, QUIT as usize, w!("退出"));
-            SetForegroundWindow(self.host.get());
-            let command = TrackPopupMenu(
-                menu,
-                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                x,
-                y,
-                0,
-                self.host.get(),
-                null(),
-            );
-            DestroyMenu(menu);
-            // Complete popup dismissal even if the user cancels.
-            PostMessageW(self.host.get(), WM_NULL, 0, 0);
-            match command as u32 {
-                POSITION_LOCK => {
-                    if let Err(error) = self.state.toggle_position_lock() {
-                        widget::show_startup_error(&format!("Cannot save position lock: {error}"));
-                    }
-                }
-                PAUSE => self.pause(),
-                QUIT => PostQuitMessage(0),
-                _ => (),
-            }
+        let locked = self
+            .state
+            .settings
+            .read()
+            .map(|settings| settings.position_locked)
+            .unwrap_or(true);
+        let paused = self
+            .state
+            .paused
+            .lock()
+            .map(|value| value.paused)
+            .unwrap_or(false);
+        if let Err(error) = self.menu.open(self.host.get(), x, y, locked, paused) {
+            widget::show_startup_error(&format!("Cannot open XAML menu: {error}"));
         }
     }
 }
@@ -196,6 +131,7 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         self.state.shutdown.store(true, Ordering::Relaxed);
+        self.menu.close();
         self.settings.close();
         // SAFETY: the hidden application window belongs to this thread.
         unsafe {
@@ -317,6 +253,28 @@ unsafe extern "system" fn host_proc(
                 }
                 OPEN_MENU => {
                     context.menu(wparam as i32, lparam as i32);
+                    return 0;
+                }
+                menu::ACTION => {
+                    match wparam as u32 {
+                        menu::POSITION_LOCK => {
+                            if let Err(error) = context.state.toggle_position_lock() {
+                                widget::show_startup_error(&format!(
+                                    "Cannot save position lock: {error}"
+                                ));
+                            }
+                        }
+                        menu::PAUSE => context.pause(),
+                        menu::QUIT => PostQuitMessage(0),
+                        _ => (),
+                    }
+                    return 0;
+                }
+                menu::FAILED => {
+                    widget::show_startup_error(&format!(
+                        "Cannot open the Windows XAML menu (HRESULT 0x{:08X}). Windows 10 1903 or newer is required.",
+                        wparam as u32
+                    ));
                     return 0;
                 }
                 WM_CLOSE => {

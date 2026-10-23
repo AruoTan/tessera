@@ -1,7 +1,7 @@
 //! Rust-owned Windows application lifecycle and native settings controls.
 
 #[cfg(any(windows, test))]
-mod menu_icon;
+mod menu;
 #[cfg(windows)]
 mod settings;
 #[cfg(windows)]

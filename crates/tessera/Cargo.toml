@@ -20,6 +20,25 @@ resvg = { version = "0.48.1", default-features = false }
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
 
 [target.'cfg(windows)'.dependencies]
+# Inbox XAML APIs were removed from later windows-rs releases. Keep these
+# bindings isolated from the current bindings used by monitoring and rendering.
+windows-xaml = { package = "windows", version = "=0.37.0", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Foundation_Numerics",
+    "Storage_Streams",
+    "UI_ViewManagement",
+    "UI_Xaml_Controls",
+    "UI_Xaml_Controls_Primitives",
+    "UI_Xaml_Hosting",
+    "UI_Xaml_Markup",
+    "UI_Xaml_Media",
+    "UI_Xaml_Media_Animation",
+    "UI_Xaml_Media_Imaging",
+    "Win32_Foundation",
+    "Win32_System_WinRT_Xaml",
+    "Win32_UI_WindowsAndMessaging",
+] }
 windows = { version = "0.62", features = [
     "Win32_Graphics_Direct2D",
     "Win32_Graphics_Direct2D_Common",
