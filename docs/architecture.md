@@ -144,9 +144,26 @@ supported Windows version remains 10 1903.
 `Closing` defers dismissal for a 100-ms card fade. Beginning exit revokes the
 entry completion callback; queued entry messages are ignored while closing, so
 an interrupted opening cannot start a shadow during dismissal. The exit storyboard's
-completion permits `Hide`. A command is sent back to the main application only
-after XAML raises `Closed`. Animation setup failures fall back to static
-presentation or immediate closing rather than blocking menu actions.
+completion permits `Hide`. A native 100-ms watchdog runs only while a menu is
+active. A 350-ms close deadline, recorded before cancelling `Closing` and never
+extended by repeated requests, also permits `Hide` if a storyboard completion
+is lost. If deferring close cannot be queued, normal framework dismissal proceeds.
+A command is sent back only after `Closed` or confirmation that `Hide` made
+`IsOpen` false. Cleanup is generation-checked and idempotent. Animation setup
+failures fall back to static presentation or immediate closing.
+
+Each request snapshots the foreground HWND before first-use initialization; a
+foreground switch invalidates it before presentation. The anchor is shown without
+activation, then explicitly requests foreground activation. A denied activation
+aborts presentation unless this menu STA already holds the foreground. Before a
+delayed `Loaded` shows the flyout, activation is checked again. `WM_ACTIVATEAPP`
+and `WM_ACTIVATE` queue generation-tagged checks after activation handoff; the
+watchdog covers missed notifications. The menu closes when another UI thread
+holds the foreground, including the settings panel. Both the anchor and XAML's
+popup belong to the menu STA, so moving focus between them does not dismiss it.
+A transient NULL foreground is rechecked rather than treated as lost activation.
+The watchdog is removed on dismissal and teardown; queued old ticks examine
+only the current generation's deadline. No global input hooks are installed.
 The anchor is placed at its final coordinates before `ShowAt`; there is no
 animation thread, popup HWND discovery or `SetWindowPos` on a framework-owned
 popup. Moving that popup independently caused it to jump back when XAML next

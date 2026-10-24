@@ -215,7 +215,16 @@ After settling, move the pointer across the
 menu and widget, wait at least a second, and confirm there is no second jump
 or placement correction. With animations disabled the menu must appear directly
 at its final position. Verify arrow keys, Enter, Escape, outside-click dismissal,
-screen edges, and repeated opening/closing.
+screen edges, and repeated opening/closing. Repeat outside clicks on the desktop,
+another application's content, taskbar buttons, and the Settings window. Test
+Alt+Tab, opening Start/calendar, and switching away during first-use initialization
+or the entry/shadow animation. No topmost menu should remain until an item is
+selected. Focus handoff from the anchor to its XAML popup must not close it.
+The Windows smoke test also activates a real window on another UI thread,
+rejects a request with an obsolete foreground snapshot, and cancels the exit
+storyboard to verify the native close deadline releases the popup. Run with
+animations enabled to exercise that timeout, then repeat with animations disabled
+and high contrast. Linux cannot execute these interactive checks.
 After selecting an item, the action should run after the close animation.
 Sampling and widget updates must continue during first-use XAML initialization.
 The menu thread/XAML source are created on first use and retained until shutdown;

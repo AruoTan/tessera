@@ -11,11 +11,12 @@ use std::{
     ptr::{null, null_mut},
     rc::Rc,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
 use windows_sys::{
     Win32::{
@@ -65,6 +66,10 @@ const CARD_READY: u32 = WM_APP + 44;
 const ENTRY_COMPLETED: u32 = WM_APP + 45;
 const BEGIN_CLOSE: u32 = WM_APP + 46;
 const EXIT_COMPLETED: u32 = WM_APP + 47;
+const CHECK_ACTIVATION: u32 = WM_APP + 48;
+const WATCHDOG: usize = 1;
+const WATCHDOG_INTERVAL_MS: u32 = 100;
+const CLOSE_TIMEOUT: Duration = Duration::from_millis(350);
 const HOST_CLASS: windows_sys::core::PCWSTR = w!("TesseraXamlMenuHost");
 
 struct Request {
@@ -72,6 +77,7 @@ struct Request {
     y: i32,
     locked: bool,
     paused: bool,
+    foreground: usize,
 }
 
 #[derive(Default)]
@@ -88,6 +94,9 @@ impl Controller {
         locked: bool,
         paused: bool,
     ) -> std::result::Result<(), String> {
+        // Snapshot before the potentially slow first-use XAML initialization.
+        // SAFETY: only an opaque HWND value crosses the worker queue.
+        let foreground = unsafe { GetForegroundWindow() } as usize;
         let mut worker = self.worker.borrow_mut();
         if worker
             .as_ref()
@@ -106,6 +115,7 @@ impl Controller {
                 y,
                 locked,
                 paused,
+                foreground,
             })
             .map_err(|error| error.to_string())?;
         let id = worker.id.load(Ordering::Acquire);
@@ -257,6 +267,7 @@ struct Flyout {
     closing: Option<EventRegistrationToken>,
     allow_close: Arc<AtomicBool>,
     closing_started: Cell<bool>,
+    close_deadline: Arc<OnceLock<Instant>>,
     entry_complete: Cell<bool>,
     card: RefCell<Option<Rc<appearance::Card>>>,
     animation: RefCell<Option<appearance::Animation>>,
@@ -342,18 +353,27 @@ impl Flyout {
         }
         let address = hwnd as usize;
         let allow_close = Arc::new(AtomicBool::new(false));
+        let close_deadline = Arc::new(OnceLock::new());
         let closing = if appearance.is_some() {
             let allow = allow_close.clone();
+            let deadline = close_deadline.clone();
             Some(base.Closing(
                 TypedEventHandler::<FlyoutBase, FlyoutBaseClosingEventArgs>::new(move |_, args| {
                     if !allow.load(Ordering::Acquire)
                         && UISettings::new()?.AnimationsEnabled()?
                         && let Some(args) = args
                     {
-                        args.SetCancel(true)?;
-                        // SAFETY: defer Hide until the card exit animation ends.
-                        unsafe {
-                            PostMessageW(address as HWND, BEGIN_CLOSE, serial as usize, 0);
+                        // The native watchdog remains independent of XAML clocks.
+                        // Repeated light-dismiss attempts must not extend the deadline.
+                        if deadline.get().is_none() {
+                            let _ = deadline.set(Instant::now() + CLOSE_TIMEOUT);
+                        }
+                        // Only cancel when the deferred close was actually queued.
+                        // SAFETY: this HWND and its timer belong to this STA.
+                        if unsafe { PostMessageW(address as HWND, BEGIN_CLOSE, serial as usize, 0) }
+                            != 0
+                        {
+                            args.SetCancel(true)?;
                         }
                     }
                     Ok(())
@@ -376,6 +396,7 @@ impl Flyout {
             closing,
             allow_close,
             closing_started: Cell::new(false),
+            close_deadline,
             entry_complete: Cell::new(false),
             card: RefCell::new(None),
             animation: RefCell::new(None),
@@ -508,10 +529,17 @@ impl Session {
     }
 
     fn open(&self, request: Request) -> Result<()> {
+        // A foreground switch during worker startup makes this request obsolete.
+        if unsafe { GetForegroundWindow() } as usize != request.foreground {
+            return Ok(());
+        }
         self.anchor.SetRequestedTheme(theme())?;
         let serial = self.sequence.get().wrapping_add(1);
         self.sequence.set(serial);
         let flyout = Rc::new(Flyout::new(self.hwnd, &request, serial)?);
+        if unsafe { GetForegroundWindow() } as usize != request.foreground {
+            return Ok(());
+        }
         // SAFETY: moving the empty root to physical coordinates lets XAML
         // handle monitor DPI, popup layout and work-area clipping.
         // Set the final anchor once. XAML animates the card; moving its
@@ -577,11 +605,22 @@ impl Session {
                 1,
                 SWP_NOACTIVATE,
             );
-            ShowWindow(self.hwnd, SW_SHOW);
-            SetForegroundWindow(self.hwnd);
+            ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+            let activated = SetForegroundWindow(self.hwnd) != 0;
+            if !activated && !self.has_foreground() {
+                // Do not leave a topmost menu open without working activation.
+                ShowWindow(self.hwnd, SW_HIDE);
+                return Ok(());
+            }
         }
 
         *self.active.borrow_mut() = Some(flyout);
+        // SAFETY: active only while the menu is open, with no callback pointer.
+        if unsafe { SetTimer(self.hwnd, WATCHDOG, WATCHDOG_INTERVAL_MS, None) } == 0 {
+            let error = Error::from_win32();
+            self.dismiss();
+            return Err(error);
+        }
 
         let element: UIElement = self.anchor.cast()?;
         element.UpdateLayout()?;
@@ -596,6 +635,11 @@ impl Session {
             && !active.shown.get()
             && self.anchor.IsLoaded()?
         {
+            // Loaded can arrive after the user has already switched away.
+            if !self.has_foreground() || active.closing_started.get() {
+                self.dismiss();
+                return Ok(());
+            }
             let element: UIElement = self.anchor.cast()?;
             active.base.SetXamlRoot(element.XamlRoot()?)?;
             active.shown.set(true);
@@ -724,6 +768,13 @@ impl Session {
         if active.closing_started.replace(true) {
             return Ok(());
         }
+        if active.close_deadline.get().is_none() {
+            let _ = active.close_deadline.set(Instant::now() + CLOSE_TIMEOUT);
+        }
+        if !active.shown.get() {
+            self.dismiss();
+            return Ok(());
+        }
         // Revoke entry completion before replacing its animation. A completion
         // message already queued is rejected by closing_started above.
         let card = active.card.borrow().clone();
@@ -750,12 +801,79 @@ impl Session {
         {
             active.animation.borrow_mut().take();
             active.allow_close.store(true, Ordering::Release);
-            active.base.Hide()?;
+            if let Err(error) = active.base.Hide() {
+                // Drop removes the Closing handler before retrying Hide.
+                self.dismiss();
+                return Err(error);
+            }
+            if !active.base.IsOpen()? {
+                // Do not depend solely on delivery of the posted Closed callback.
+                self.closed(serial);
+            }
         }
         Ok(())
     }
 
+    fn queue_activation_check(&self) {
+        let active = self.active.borrow().clone();
+        if let Some(active) = active {
+            // Defer until activation messages have settled. Moving focus between
+            // the anchor and XAML's popup must not dismiss the menu.
+            unsafe {
+                PostMessageW(self.hwnd, CHECK_ACTIVATION, active.serial as usize, 0);
+            }
+        }
+    }
+
+    fn is_menu_window(window: HWND) -> bool {
+        // XAML's popup may hold activation instead of the empty anchor. Both
+        // belong to this dedicated STA; another application/settings does not.
+        // SAFETY: querying HWND/thread identity does not dereference a pointer.
+        unsafe {
+            !window.is_null()
+                && GetWindowThreadProcessId(window, null_mut()) == GetCurrentThreadId()
+        }
+    }
+
+    fn has_foreground(&self) -> bool {
+        Self::is_menu_window(unsafe { GetForegroundWindow() })
+    }
+
+    fn check_activation(&self, serial: u32) -> Result<()> {
+        let active = self.active.borrow().clone();
+        if active.is_some_and(|active| active.serial == serial) {
+            // Read once: activation may change between two foreground queries.
+            // NULL is transient during handoff; the watchdog checks again later.
+            let foreground = unsafe { GetForegroundWindow() };
+            if !foreground.is_null() && !Self::is_menu_window(foreground) {
+                self.begin_close(serial)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn watchdog(&self) -> Result<()> {
+        let active = self.active.borrow().clone();
+        let Some(active) = active else {
+            return Ok(());
+        };
+        if active
+            .close_deadline
+            .get()
+            .is_some_and(|deadline| Instant::now() >= *deadline)
+        {
+            active.closing_started.set(true);
+            return self.exit_completed(active.serial);
+        }
+        self.check_activation(active.serial)
+    }
+
     fn dismiss(&self) {
+        // KillTimer does not remove already queued WM_TIMER messages. The handler
+        // reads only the current menu/deadline, so an old tick cannot close a new one.
+        unsafe {
+            KillTimer(self.hwnd, WATCHDOG);
+        }
         let active = self.active.borrow_mut().take();
         drop(active);
         // SAFETY: hide only the empty anchor; XAML owns the actual popup.
@@ -771,7 +889,7 @@ impl Session {
         };
         let command = active.command.get();
         self.dismiss();
-        // Dispatch only after Closed, preserving the completed exit animation.
+        // Dispatch after confirmed dismissal, normally after the exit animation.
         if command != 0 {
             // SAFETY: the main application receives only an integer command.
             unsafe {
@@ -809,6 +927,9 @@ impl Drop for Session {
         // SAFETY: detach callbacks before closing the source and destroying HWND.
         unsafe {
             SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
+        }
+        unsafe {
+            KillTimer(self.hwnd, WATCHDOG);
         }
         let _ = self.anchor.RemoveLoaded(self.loaded);
         self.active.get_mut().take();
@@ -904,10 +1025,33 @@ unsafe extern "system" fn window_proc(
                     session.closed(wparam as u32);
                     return 0;
                 }
-                WM_CLOSE => {
+                WM_ACTIVATEAPP if wparam == 0 => {
+                    session.queue_activation_check();
+                }
+                WM_ACTIVATE if wparam as u16 == WA_INACTIVE as u16 => {
+                    session.queue_activation_check();
+                }
+                CHECK_ACTIVATION => {
+                    if let Err(error) = session.check_activation(wparam as u32) {
+                        eprintln!("Cannot dismiss an inactive menu: {error}");
+                        let _ = session.exit_completed(wparam as u32);
+                    }
+                    return 0;
+                }
+                WM_TIMER if wparam == WATCHDOG => {
+                    if let Err(error) = session.watchdog() {
+                        eprintln!("Cannot complete menu dismissal: {error}");
+                        session.dismiss();
+                    }
+                    return 0;
+                }
+                WM_CLOSE | WM_CANCELMODE => {
                     let active = session.active.borrow().clone();
-                    if let Some(active) = active {
-                        let _ = active.base.Hide();
+                    if let Some(active) = active
+                        && let Err(error) = session.begin_close(active.serial)
+                    {
+                        eprintln!("Cannot close the menu: {error}");
+                        let _ = session.exit_completed(active.serial);
                     }
                     return 0;
                 }
@@ -938,6 +1082,74 @@ mod tests {
                 }
                 MsgWaitForMultipleObjectsEx(0, null(), 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             }
+        }
+    }
+
+    // A different UI thread is essential: our foreground predicate intentionally
+    // accepts both the anchor and XAML popup on the menu STA.
+    struct OutsideWindow {
+        hwnd: usize,
+        id: u32,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl OutsideWindow {
+        fn new() -> Self {
+            let (sender, receiver) = mpsc::channel();
+            let thread = std::thread::spawn(move || unsafe {
+                let window = WindowGuard(CreateWindowExW(
+                    WS_EX_TOOLWINDOW,
+                    w!("STATIC"),
+                    w!("Tessera dismissal test"),
+                    WS_OVERLAPPEDWINDOW,
+                    20,
+                    20,
+                    180,
+                    100,
+                    null_mut(),
+                    null_mut(),
+                    GetModuleHandleW(null()),
+                    null(),
+                ));
+                assert!(!window.0.is_null());
+                ShowWindow(window.0, SW_SHOWNOACTIVATE);
+                sender
+                    .send((window.0 as usize, GetCurrentThreadId()))
+                    .unwrap();
+                let mut message = MSG::default();
+                while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            });
+            let (hwnd, id) = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+            Self {
+                hwnd,
+                id,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    impl Drop for OutsideWindow {
+        fn drop(&mut self) {
+            unsafe {
+                PostThreadMessageW(self.id, WM_QUIT, 0, 0);
+            }
+            let thread = self.thread.take().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !thread.is_finished() && Instant::now() < deadline {
+                unsafe {
+                    let mut message = MSG::default();
+                    while PeekMessageW(&mut message, null_mut(), 0, 0, PM_REMOVE) != 0 {
+                        TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                    MsgWaitForMultipleObjectsEx(0, null(), 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                }
+            }
+            assert!(thread.is_finished(), "outside window teardown timed out");
+            thread.join().unwrap();
         }
     }
 
@@ -1060,6 +1272,7 @@ mod tests {
                     y: monitor.rcWork.bottom + 1,
                     locked,
                     paused: locked,
+                    foreground: unsafe { GetForegroundWindow() } as usize,
                 };
                 session.open(request)?;
                 let opened_at = Instant::now();
@@ -1163,6 +1376,7 @@ mod tests {
                 y: 100,
                 locked: false,
                 paused: false,
+                foreground: unsafe { GetForegroundWindow() } as usize,
             })?;
             let interrupted = session.active.borrow().clone().unwrap();
             if interrupted.custom_shadow {
@@ -1177,6 +1391,60 @@ mod tests {
                 interrupted.base.Hide()?;
             }
             pump_until(&session, || !session.is_open());
+
+            // A request from before a foreground switch must never show later.
+            session.open(Request {
+                x: 100, y: 100, locked: false, paused: false,
+                foreground: usize::MAX,
+            })?;
+            assert!(!session.is_open());
+
+            let outside = OutsideWindow::new();
+            for lose_focus in [false, true] {
+                session.open(Request {
+                    x: monitor.rcWork.left + 100,
+                    y: monitor.rcWork.bottom + 1,
+                    locked: false, paused: false,
+                    foreground: unsafe { GetForegroundWindow() } as usize,
+                })?;
+                let active = session.active.borrow().clone().unwrap();
+                pump_until(&session, || active.base.IsOpen().unwrap_or(false));
+                if active.custom_shadow {
+                    pump_until(&session, || active.card.borrow().is_some());
+                }
+                assert!(session.has_foreground());
+                // Spurious/stale notifications during internal focus handoff
+                // must not dismiss a menu that still owns the foreground.
+                unsafe {
+                    SendMessageW(session.hwnd, CHECK_ACTIVATION, previous as usize, 0);
+                    SendMessageW(session.hwnd, CHECK_ACTIVATION, active.serial as usize, 0);
+                    SendMessageW(session.hwnd, WM_TIMER, WATCHDOG, 0);
+                }
+                assert!(!active.closing_started.get());
+                if lose_focus {
+                    // Real cross-thread activation, not a direct Hide call.
+                    unsafe { assert_ne!(SetForegroundWindow(outside.hwnd as HWND), 0); }
+                    pump_until(&session, || !session.is_open());
+                    assert_eq!(active.command.get(), 0);
+                } else {
+                    session.begin_close(active.serial)?;
+                    // Cancel the storyboard and remove its Completed handler.
+                    // The native timer must still release the actual popup.
+                    active.animation.borrow_mut().take();
+                    let deadline = *active.close_deadline.get().unwrap();
+                    session.begin_close(active.serial)?;
+                    assert_eq!(*active.close_deadline.get().unwrap(), deadline);
+                    pump_until(&session, || !session.is_open());
+                    if active.custom_shadow && UISettings::new()?.AnimationsEnabled()? {
+                        assert!(Instant::now() >= deadline);
+                        assert!(active.allow_close.load(Ordering::Acquire));
+                    }
+                }
+                assert!(!active.base.IsOpen()?);
+                // Already-queued ticks after KillTimer are harmless.
+                unsafe { SendMessageW(session.hwnd, WM_TIMER, WATCHDOG, 0); }
+                assert!(!session.is_open());
+            }
             Ok(())
         })
         .join()
