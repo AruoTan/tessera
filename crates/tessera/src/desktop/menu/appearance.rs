@@ -30,7 +30,6 @@ const MARKUP: &str = include_str!("../../../resources/windows/context-menu.xaml"
 pub(super) struct Appearance {
     pub presenter: Style,
     pub item: Style,
-    #[allow(dead_code)]
     pub separator: Style,
 }
 

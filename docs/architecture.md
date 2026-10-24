@@ -61,7 +61,7 @@ with standard `MenuFlyoutItem`, `MenuFlyoutSeparator` and `FontIcon` objects.
 `resources/windows/context-menu.xaml` supplies an 8-DIP rounded presenter,
 Fluent Desktop Acrylic (`HostBackdrop`) material with balanced tint and luminosity opacity
 that naturally responds to light and dark underlying application surfaces, a subtle outline,
-compact 32-DIP rows and 12-DIP text. A separate hollow edge-shadow image sits
+compact 28-DIP rows and 12-DIP text. A separate hollow edge-shadow image sits
 behind the rounded card. Both the presenter's automatic shadow and the card's
 `ThemeShadow` are absent. A custom item template supplies icon/text columns and
 pointer/pressed/disabled states.

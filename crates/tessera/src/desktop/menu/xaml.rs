@@ -1,7 +1,7 @@
 //! Inbox Windows.UI.Xaml.Controls.MenuFlyout hosted through XAML Islands.
 //! The worker owns every XAML object; only integer commands cross UI threads.
 use super::{
-    Icon,
+    Icon, QUIT,
     appearance::{self, Appearance},
     commands, shadow,
 };
@@ -38,7 +38,7 @@ use windows_xaml::{
             Controls::Primitives::{
                 FlyoutBase, FlyoutBaseClosingEventArgs, FlyoutPlacementMode, FlyoutShowMode, Popup,
             },
-            Controls::{FontIcon, Grid, MenuFlyout, MenuFlyoutItem, Symbol},
+            Controls::{FontIcon, Grid, MenuFlyout, MenuFlyoutItem, MenuFlyoutSeparator, Symbol},
             ElementTheme, FrameworkElement,
             Hosting::{DesktopWindowXamlSource, WindowsXamlManager},
             Media::{FontFamily, VisualTreeHelper},
@@ -303,6 +303,15 @@ impl Flyout {
             .into_iter()
             .enumerate()
         {
+            if command.id == QUIT {
+                let separator = MenuFlyoutSeparator::new()?;
+                if let Some(appearance) = &appearance {
+                    separator
+                        .cast::<FrameworkElement>()?
+                        .SetStyle(&appearance.separator)?;
+                }
+                items.Append(&separator)?;
+            }
             let item = MenuFlyoutItem::new()?;
             item.SetText(HSTRING::from(command.label))?;
             if let Some(appearance) = &appearance {
@@ -1289,13 +1298,14 @@ mod tests {
                     }
                 }
                 assert!(!active.base.IsConstrainedToRootBounds()?);
-                assert_eq!(active.menu.Items()?.Size()?, 3);
+                assert_eq!(active.menu.Items()?.Size()?, 4);
+                active.menu.Items()?.GetAt(2)?.cast::<MenuFlyoutSeparator>()?;
                 if active.custom_shadow {
                     let first: MenuFlyoutItem = active.menu.Items()?.GetAt(0)?.cast()?;
                     let root = appearance::card_root(&first)?;
                     let root_fe: FrameworkElement = root.cast()?;
                     let mut rows = 0.0;
-                    for index in 0..3 {
+                    for index in 0..4 {
                         let row: FrameworkElement = active.menu.Items()?.GetAt(index)?.cast()?;
                         let margin = row.Margin()?;
                         rows += row.ActualHeight()? + margin.Top + margin.Bottom;

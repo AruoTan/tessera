@@ -68,7 +68,7 @@
         <Setter Property="MinWidth" Value="0" />
         <Setter Property="MinHeight" Value="28" />
         <Setter Property="Height" Value="28" />
-        <Setter Property="Margin" Value="4,2,4,2" />
+        <Setter Property="Margin" Value="4,0,4,0" />
         <Setter Property="Padding" Value="12,0,12,0" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="FontFamily" Value="Segoe UI Variable Text, Microsoft YaHei UI, Segoe UI" />
@@ -130,7 +130,7 @@
     </Style>
 
     <Style x:Key="Separator" TargetType="MenuFlyoutSeparator">
-        <Setter Property="MinHeight" Value="7" />
+        <Setter Property="MinHeight" Value="1" />
         <Setter Property="Margin" Value="4,3,4,3" />
         <Setter Property="Background" Value="{StaticResource MenuSeparator}" />
         <Setter Property="Template">
