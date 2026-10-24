@@ -1,9 +1,8 @@
 //! Windows GPU counter accounting, independent of counter enumeration order.
-use serde::Serialize;
 use std::collections::BTreeSet;
 
 /// Detection failures and unavailable counters are not evidence of absent hardware.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Presence {
     #[default]
     Unknown,
@@ -11,10 +10,9 @@ pub enum Presence {
     Present,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Snapshot {
     pub presence: Presence,
-    pub name: Option<String>,
     pub percent: Option<f64>,
     /// Adapter-wide dedicated + shared usage, never summed across processes.
     pub memory_used_bytes: Option<u64>,

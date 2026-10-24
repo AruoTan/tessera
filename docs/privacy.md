@@ -15,7 +15,7 @@ CPU temperature may be read from a compatible, separately running local
 LibreHardwareMonitor or OpenHardwareMonitor WMI provider. Tessera does not
 install or launch those programs.
 
-Measurements and session totals are held in memory while the application runs.
+Current measurements are held in memory while the application runs.
 The application does not write a monitoring history database.
 
 ## Local settings

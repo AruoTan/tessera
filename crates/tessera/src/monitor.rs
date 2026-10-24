@@ -39,9 +39,6 @@ pub fn start(state: AppState) -> std::io::Result<()> {
         .spawn(move || {
             let mut sampler = Sampler::default();
             let mut previous = Instant::now();
-            let mut session_download: u64 = 0;
-            let mut session_upload: u64 = 0;
-            let mut previous_adapter = None;
             let mut previous_pause = PauseState::default();
             let mut read_failed = false;
             while !state.shutdown.load(Ordering::Relaxed) {
@@ -68,11 +65,6 @@ pub fn start(state: AppState) -> std::io::Result<()> {
                 let mut adapters: Vec<_> = current.values().map(|a| a.name.clone()).collect();
                 adapters.sort();
                 adapters.dedup();
-                if settings.adapter != previous_adapter {
-                    session_download = 0;
-                    session_upload = 0;
-                    previous_adapter = settings.adapter.clone();
-                }
                 let sample = sampler.sample(
                     current,
                     now.duration_since(previous),
@@ -85,16 +77,10 @@ pub fn start(state: AppState) -> std::io::Result<()> {
                 };
                 let counting = pause.counts_interval_after(previous_pause);
                 previous_pause = pause;
-                if counting {
-                    session_download = session_download.saturating_add(sample.received);
-                    session_upload = session_upload.saturating_add(sample.transmitted);
-                }
                 let snapshot = Snapshot {
                     hardware: Default::default(),
                     download_bps: if counting { sample.download_bps } else { 0.0 },
                     upload_bps: if counting { sample.upload_bps } else { 0.0 },
-                    session_download,
-                    session_upload,
                     adapter_missing: settings
                         .adapter
                         .as_ref()

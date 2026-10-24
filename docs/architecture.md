@@ -286,7 +286,9 @@ an interval before normal initial presentation. Physical memory usage is
 it does not include page-file capacity, and reclaimable standby pages remain
 available. Both readings share a fixed one-second hardware sampler, independent
 of the network sampler; each updates only its own fields in shared state. The
-taskbar thread only draws published results. An unavailable reading shows a
+taskbar thread only draws published results. It copies only hardware readings,
+speeds and status flags, leaving adapter lists in shared state and releasing
+the read lock before reentrant native UI calls. An unavailable reading shows a
 dash independently, without interrupting other metrics or retaining stale data.
 CPU query failures discard the baseline and retry after ten seconds. Pausing
 shows `Paused` for network and a pause symbol on the gauges; the baselines keep
@@ -313,8 +315,11 @@ are bounded at 100%. This follows the busiest-engine approach described by
 Counter arrays are consumed through callbacks using one reusable UTF-8 name buffer;
 no collection of owned instance-name strings is created. Aggregation reuses compact
 process/engine records, sorts them in place, merges duplicates using their maximum
-value, and reduces contiguous groups without intermediate trees. Normal PDH buffer
-capacity is reused across collections, while buffers exceeding 256 KiB are released
+value, and reduces contiguous groups without intermediate trees. GPU snapshots contain
+only copyable readings; adapter names stay in the inventory for source-change logging,
+rather than being allocated and copied through every hardware/widget refresh.
+Normal PDH buffer capacity is reused across collections, while buffers exceeding
+256 KiB are released
 after each read. Compact record capacity shrinks after a large process-count drop.
 GPU memory counters are reduced directly without an intermediate result vector.
 
@@ -364,6 +369,10 @@ and RAM continue working. Failed connections are retried after ten seconds,
 and readings older than five seconds expire so a stalled WMI provider cannot
 leave a stale temperature on screen. Temperature polling never blocks the normal sampler
 or the taskbar thread. Temperature follows the same fixed one-second cadence.
+WMI objects are decoded and released one at a time instead of retaining a batch
+of provider objects. CPU sensor selection retains only the best priority/value
+pair. ACPI keeps only decoded zone names/values until enumeration succeeds,
+so a failed query cannot modify thermal-zone history or publish partial readings.
 
 ## Network units
 
@@ -421,7 +430,10 @@ Sampling uses a fixed one-second cadence. Upload/download rates are the changes
 in cumulative byte counters divided by the actual elapsed monotonic time, so
 scheduling delays do not inflate the result. Each reading represents the average
 over that sample interval, without additional smoothing. The settings window
-offers adapter selection; the sampling interval is fixed.
+offers adapter selection; the sampling interval is fixed. The sampler updates
+counter baselines in place instead of rebuilding filtered/baseline maps on each
+read, and copies the selected adapter name only when selection changes. Unused
+session traffic totals are not maintained.
 
 This measures Windows-reported traffic through the physical adapters, including
 LAN traffic, broadcasts, and VPN encapsulation actually sent/received there.
@@ -429,7 +441,6 @@ VPN traffic is not added a second time from its virtual adapter; VPN overhead
 and retransmissions visible to the physical adapter still consume real traffic.
 With Ethernet and Wi-Fi both carrying traffic, both contribute. This is not an
 Internet-only or ISP billing counter; accuracy depends on the adapter driver.
-Session totals reset when the adapter selection changes and are not persisted.
 Pausing excludes paused traffic and the first interval after resuming.
 
 ## Structure

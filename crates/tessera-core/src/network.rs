@@ -1,4 +1,3 @@
-use serde::Serialize;
 use std::{collections::BTreeMap, time::Duration};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -31,10 +30,12 @@ pub fn physical_adapters(
 ) -> BTreeMap<u64, Adapter> {
     adapters
         .into_iter()
-        .filter(|(_, adapter)| {
-            adapter.physical && matches!(adapter.kind, AdapterKind::Ethernet | AdapterKind::Wifi)
-        })
+        .filter(|(_, adapter)| eligible(adapter))
         .collect()
+}
+
+fn eligible(adapter: &Adapter) -> bool {
+    adapter.physical && matches!(adapter.kind, AdapterKind::Ethernet | AdapterKind::Wifi)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -56,13 +57,11 @@ impl PauseState {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub hardware: crate::hardware::HardwareSnapshot,
     pub download_bps: f64,
     pub upload_bps: f64,
-    pub session_download: u64,
-    pub session_upload: u64,
     pub adapters: Vec<String>,
     pub ready: bool,
     pub paused: bool,
@@ -92,37 +91,42 @@ impl Sampler {
         elapsed: Duration,
         adapter: Option<&str>,
     ) -> Sample {
-        // Enforce the same policy for automatic and explicit selection, even if
-        // a caller supplies unfiltered interfaces.
-        let current = physical_adapters(current);
-        let selection = adapter.map(str::to_owned);
-        let baseline_ready = self.initialized && selection == self.selection && !elapsed.is_zero();
+        let baseline_ready =
+            self.initialized && adapter == self.selection.as_deref() && !elapsed.is_zero();
+        // Keep existing baseline nodes for unchanged interfaces. Remove missing
+        // or newly ineligible identities before updating counters in place.
+        self.previous
+            .retain(|id, _| current.get(id).is_some_and(eligible));
         let mut result = Sample::default();
-        if baseline_ready {
-            for (id, value) in &current {
-                if adapter.is_some_and(|selected| selected != value.name) {
-                    continue;
-                }
-                if let Some(previous) = self.previous.get(id) {
-                    // Reset/replaced interfaces must never cause unsigned wraparound spikes.
-                    if let (Some(received), Some(transmitted)) = (
-                        value.counters.received.checked_sub(previous.received),
-                        value.counters.transmitted.checked_sub(previous.transmitted),
-                    ) {
-                        result.received = result.received.saturating_add(received);
-                        result.transmitted = result.transmitted.saturating_add(transmitted);
-                    }
-                    result.ready = true;
-                }
+        for (id, value) in current {
+            // Apply the same metadata policy to automatic and explicit selection,
+            // including callers that supply unfiltered interfaces.
+            if !eligible(&value) {
+                continue;
             }
+            let previous = self.previous.insert(id, value.counters);
+            if !baseline_ready || adapter.is_some_and(|selected| selected != value.name) {
+                continue;
+            }
+            if let Some(previous) = previous {
+                // Reset/replaced interfaces must never cause unsigned wraparound spikes.
+                if let (Some(received), Some(transmitted)) = (
+                    value.counters.received.checked_sub(previous.received),
+                    value.counters.transmitted.checked_sub(previous.transmitted),
+                ) {
+                    result.received = result.received.saturating_add(received);
+                    result.transmitted = result.transmitted.saturating_add(transmitted);
+                }
+                result.ready = true;
+            }
+        }
+        if baseline_ready {
             result.download_bps = result.received as f64 / elapsed.as_secs_f64();
             result.upload_bps = result.transmitted as f64 / elapsed.as_secs_f64();
         }
-        self.previous = current
-            .into_iter()
-            .map(|(id, adapter)| (id, adapter.counters))
-            .collect();
-        self.selection = selection;
+        if self.selection.as_deref() != adapter {
+            self.selection = adapter.map(str::to_owned);
+        }
         self.initialized = true;
         result
     }
@@ -334,6 +338,48 @@ mod tests {
         assert_eq!(sample.transmitted, 1_000);
         assert_eq!(sample.download_bps, 4_000.0);
         assert_eq!(sample.upload_bps, 2_000.0);
+    }
+
+    #[test]
+    fn an_ineligible_interval_discards_the_old_identity_baseline() {
+        let mut sampler = Sampler::default();
+        for (physical, kind) in [(false, AdapterKind::Ethernet), (true, AdapterKind::Other)] {
+            let interfaces = |physical, kind, bytes| {
+                BTreeMap::from([(1, interface("Ethernet", kind, physical, bytes))])
+            };
+            sampler.sample(
+                interfaces(true, AdapterKind::Ethernet, 100),
+                Duration::from_secs(1),
+                None,
+            );
+            assert_eq!(
+                sampler.sample(
+                    interfaces(physical, kind, 1_000),
+                    Duration::from_secs(1),
+                    None
+                ),
+                Sample::default()
+            );
+            // The same identity cannot inherit a baseline through an excluded interval.
+            assert_eq!(
+                sampler.sample(
+                    interfaces(true, AdapterKind::Ethernet, 10_000),
+                    Duration::from_secs(1),
+                    None,
+                ),
+                Sample::default()
+            );
+            assert_eq!(
+                sampler
+                    .sample(
+                        interfaces(true, AdapterKind::Ethernet, 10_100),
+                        Duration::from_secs(1),
+                        None,
+                    )
+                    .received,
+                100
+            );
+        }
     }
 
     #[test]

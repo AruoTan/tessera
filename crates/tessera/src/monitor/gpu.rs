@@ -61,7 +61,7 @@ impl Reader {
             return Snapshot::default();
         };
         if reading.at.elapsed() <= Duration::from_secs(5) {
-            reading.snapshot.clone()
+            reading.snapshot
         } else {
             Snapshot {
                 presence: reading.snapshot.presence,
@@ -312,19 +312,15 @@ impl Query {
         let memory_used_bytes = dedicated
             .zip(memory(self.shared))
             .and_then(|(dedicated, shared)| dedicated.checked_add(shared));
-        let name = Some(info.name.clone());
         if *selected != Some(adapter) {
             eprintln!(
                 "GPU monitor: {} (physical {}, LUID {:016x})",
-                name.as_deref().unwrap_or("GPU"),
-                adapter.physical,
-                adapter.luid
+                info.name, adapter.physical, adapter.luid
             );
         }
         *selected = Some(adapter);
         Ok(Snapshot {
             presence: Presence::Present,
-            name,
             percent: Some(percent),
             memory_used_bytes,
         })
@@ -356,7 +352,6 @@ mod tests {
             at: Instant::now(),
             snapshot: Snapshot {
                 presence: Presence::Present,
-                name: Some("GPU".into()),
                 percent: Some(80.0),
                 memory_used_bytes: Some(1024),
             },

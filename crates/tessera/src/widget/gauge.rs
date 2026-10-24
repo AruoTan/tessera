@@ -235,7 +235,6 @@ mod tests {
             cpu_temperature_c: Some(52.1),
             gpu: tessera_core::hardware::gpu::Snapshot {
                 presence: tessera_core::hardware::gpu::Presence::Present,
-                name: Some("Test GPU".into()),
                 percent: Some(73.1),
                 memory_used_bytes: Some(3 << 30),
             },

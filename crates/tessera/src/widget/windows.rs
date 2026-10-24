@@ -907,7 +907,12 @@ unsafe fn restore_child_z_order(hwnd: HWND, taskbar: HWND) -> bool {
 unsafe fn refresh(hwnd: HWND, context: &Context) {
     // SAFETY: called on the owning thread. Window-management calls never retain Rust pointers.
     unsafe {
-        let Ok(settings) = context.state.settings.read().map(|s| s.clone()) else {
+        let Ok((offset_x, taskbar_position)) = context
+            .state
+            .settings
+            .read()
+            .map(|settings| (settings.offset_x, settings.taskbar_position))
+        else {
             return;
         };
         let taskbar = context.taskbar.get();
@@ -918,11 +923,23 @@ unsafe fn refresh(hwnd: HWND, context: &Context) {
             hide_widget(hwnd, context);
             return;
         }
-        let Ok(snapshot) = context.state.snapshot.read().map(|s| s.clone()) else {
+        // Copy only the readout's scalar data. Release the lock before native
+        // calls, which can re-enter this window; the adapter list stays in state.
+        let Ok((hardware, speeds, paused, adapter_missing, ready)) =
+            context.state.snapshot.read().map(|snapshot| {
+                (
+                    snapshot.hardware,
+                    [snapshot.upload_bps, snapshot.download_bps],
+                    snapshot.paused,
+                    snapshot.adapter_missing,
+                    snapshot.ready,
+                )
+            })
+        else {
             return;
         };
         let mut startup = context.startup.get();
-        let hardware_ready = startup.can_present(&snapshot.hardware, context.started_at.elapsed());
+        let hardware_ready = startup.can_present(&hardware, context.started_at.elapsed());
         context.startup.set(startup);
         if !hardware_ready {
             return;
@@ -978,13 +995,13 @@ unsafe fn refresh(hwnd: HWND, context: &Context) {
         } else {
             None
         };
-        let lines = [snapshot.upload_bps, snapshot.download_bps].map(|speed| {
-            if snapshot.paused {
+        let lines = speeds.map(|speed| {
+            if paused {
                 SpeedDisplay {
                     value: "Paused".into(),
                     unit: "",
                 }
-            } else if snapshot.adapter_missing {
+            } else if adapter_missing {
                 SpeedDisplay {
                     value: "—".into(),
                     unit: "",
@@ -992,11 +1009,11 @@ unsafe fn refresh(hwnd: HWND, context: &Context) {
             } else {
                 // Use the regular numeric/unit format from the first frame,
                 // without displaying stale rates while a new baseline is pending.
-                let speed = if snapshot.ready { speed } else { 0.0 };
+                let speed = if ready { speed } else { 0.0 };
                 format_speed(speed)
             }
         });
-        let mut visible = gauge::visible(snapshot.hardware.gpu.presence);
+        let mut visible = gauge::visible(hardware.gpu.presence);
         // Keep both the width and slot mapping stable until a drag finishes.
         if context.drag.get().is_some()
             && let Some(content) = context.content.borrow().as_ref()
@@ -1005,7 +1022,7 @@ unsafe fn refresh(hwnd: HWND, context: &Context) {
         }
         let content = Content {
             lines,
-            hardware: GaugeReading::from_snapshot(&snapshot.hardware, snapshot.paused),
+            hardware: GaugeReading::from_snapshot(&hardware, paused),
             visible,
         };
         let content_changed = context.content.borrow().as_ref() != Some(&content);
@@ -1028,7 +1045,7 @@ unsafe fn refresh(hwnd: HWND, context: &Context) {
         };
         context.layout.set(Some(layout));
         let dragged = context.drag.get().and_then(|drag| drag.position);
-        let position = layout.position(settings.offset_x, dragged.or(settings.taskbar_position));
+        let position = layout.position(offset_x, dragged.or(taskbar_position));
         let mut current = RECT::default();
         let had_bounds = GetWindowRect(hwnd, &mut current) != 0;
         if had_bounds {

@@ -278,14 +278,14 @@ impl Window {
         if self.hwnd.get().is_null() {
             return;
         }
-        let snapshot = context
+        let (adapters, adapter_missing, ready) = context
             .state
             .snapshot
             .read()
-            .map(|value| value.clone())
+            .map(|value| (value.adapters.clone(), value.adapter_missing, value.ready))
             .unwrap_or_default();
         let selected = self.selected();
-        self.adapters(&snapshot.adapters, selected.as_deref());
+        self.adapters(&adapters, selected.as_deref());
         let paused = context
             .state
             .paused
@@ -294,9 +294,9 @@ impl Window {
             .unwrap_or(false);
         let status = if paused {
             "监控已暂停"
-        } else if snapshot.adapter_missing {
+        } else if adapter_missing {
             "所选网卡当前不可用"
-        } else if snapshot.ready {
+        } else if ready {
             "正在监控"
         } else {
             "正在等待物理网卡…"

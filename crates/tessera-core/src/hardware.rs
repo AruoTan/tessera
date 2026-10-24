@@ -1,10 +1,9 @@
 //! System-wide hardware readings. Missing data stays distinct from zero usage.
-use serde::Serialize;
 
 pub mod gpu;
 pub mod thermal;
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct HardwareSnapshot {
     pub cpu_percent: Option<f64>,
     pub cpu_temperature_c: Option<f64>,
@@ -53,47 +52,91 @@ pub struct TemperatureSensor {
 
 /// Prefer die/package readings, then CPU cores, then an explicitly labelled CPU
 /// sensor on a motherboard's Super I/O chip. Other devices never qualify by name.
-pub fn cpu_temperature(sensors: impl IntoIterator<Item = TemperatureSensor>) -> Option<f64> {
-    sensors
-        .into_iter()
-        .filter_map(|sensor| {
-            let id = sensor.identifier.to_ascii_lowercase();
-            let name = sensor.name.to_ascii_lowercase();
-            let cpu_die = ["/intelcpu/", "/amdcpu/"]
-                .iter()
-                .any(|prefix| id.starts_with(prefix));
-            let board_cpu = id.starts_with("/lpc/")
-                && name
-                    .split(|c: char| !c.is_ascii_alphanumeric())
-                    .any(|word| word == "cpu");
-            if !cpu_die && !board_cpu {
-                return None;
-            }
-            // Distance to TjMax is a margin, not a temperature reading.
-            if name.contains("tjmax") || name.contains("distance") {
-                return None;
-            }
-            let value = sensor
-                .celsius
-                .filter(|value| value.is_finite() && *value > 0.0 && *value < 150.0)?;
-            let priority = if !cpu_die {
-                0
-            } else if name.contains("package") || name.contains("tdie") {
-                3
-            } else if name.contains("tctl") {
-                2
-            } else {
-                1
-            };
-            Some((priority, value))
-        })
-        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)))
-        .map(|(_, value)| value)
+#[derive(Default)]
+pub struct CpuTemperature(Option<(u8, f64)>);
+
+impl CpuTemperature {
+    /// Consume one sensor without retaining its name or native provider object.
+    pub fn push(&mut self, mut sensor: TemperatureSensor) {
+        sensor.identifier.make_ascii_lowercase();
+        sensor.name.make_ascii_lowercase();
+        let id = &sensor.identifier;
+        let name = &sensor.name;
+        let cpu_die = ["/intelcpu/", "/amdcpu/"]
+            .iter()
+            .any(|prefix| id.starts_with(prefix));
+        let board_cpu = id.starts_with("/lpc/")
+            && name
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|word| word == "cpu");
+        // Distance to TjMax is a margin, not a temperature reading.
+        if (!cpu_die && !board_cpu) || name.contains("tjmax") || name.contains("distance") {
+            return;
+        }
+        let Some(value) = sensor
+            .celsius
+            .filter(|value| value.is_finite() && *value > 0.0 && *value < 150.0)
+        else {
+            return;
+        };
+        let priority = if !cpu_die {
+            0
+        } else if name.contains("package") || name.contains("tdie") {
+            3
+        } else if name.contains("tctl") {
+            2
+        } else {
+            1
+        };
+        if self.0.is_none_or(|best| {
+            priority
+                .cmp(&best.0)
+                .then_with(|| value.total_cmp(&best.1))
+                .is_ge()
+        }) {
+            self.0 = Some((priority, value));
+        }
+    }
+
+    pub fn celsius(self) -> Option<f64> {
+        self.0.map(|(_, value)| value)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cpu_temperature(sensors: impl IntoIterator<Item = TemperatureSensor>) -> Option<f64> {
+        let mut best = CpuTemperature::default();
+        for sensor in sensors {
+            best.push(sensor);
+        }
+        best.celsius()
+    }
+
+    #[test]
+    fn streamed_temperature_selection_keeps_only_the_best_current_query_reading() {
+        let mut best = CpuTemperature::default();
+        for (id, name, value, expected) in [
+            ("/nvidiagpu/0", "CPU Package", 90.0, None),
+            ("/lpc/0", "CPU", 70.0, Some(70.0)),
+            ("/intelcpu/0", "CPU Core", 55.0, Some(55.0)),
+            ("/intelcpu/0", "CPU Package", 52.0, Some(52.0)),
+            ("/intelcpu/0", "CPU Core", 90.0, Some(52.0)),
+            ("/intelcpu/1", "CPU Package", 60.0, Some(60.0)),
+            ("/intelcpu/1", "CPU Package", f64::NAN, Some(60.0)),
+        ] {
+            best.push(TemperatureSensor {
+                identifier: id.into(),
+                name: name.into(),
+                celsius: Some(value),
+            });
+            assert_eq!(best.0.map(|(_, value)| value), expected);
+        }
+        assert_eq!(best.celsius(), Some(60.0));
+        assert_eq!(CpuTemperature::default().celsius(), None);
+    }
 
     #[test]
     fn physical_memory_uses_available_pages_and_rejects_invalid_reads() {

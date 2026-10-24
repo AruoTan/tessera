@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tessera_core::hardware::thermal::{ThermalUnit, ThermalZones};
-use tessera_core::hardware::{TemperatureSensor, cpu_temperature};
+use tessera_core::hardware::{CpuTemperature, TemperatureSensor};
 use windows::{
     Win32::System::{
         Com::*,
@@ -209,45 +209,67 @@ fn property(object: &IWbemClassObject, name: PCWSTR) -> Result<VARIANT> {
 }
 
 fn query_sensors(service: &IWbemServices) -> Result<Option<f64>> {
-    let objects = query(
+    let best = query(
         service,
         "SELECT Name, Identifier, Value FROM Sensor WHERE SensorType='Temperature'",
+        CpuTemperature::default(),
+        |best, object| {
+            let sensor = (|| {
+                Some(TemperatureSensor {
+                    identifier: BSTR::try_from(&property(&object, w!("Identifier")).ok()?)
+                        .ok()?
+                        .to_string(),
+                    name: BSTR::try_from(&property(&object, w!("Name")).ok()?)
+                        .ok()?
+                        .to_string(),
+                    celsius: property(&object, w!("Value"))
+                        .ok()
+                        .and_then(|value| f64::try_from(&value).ok()),
+                })
+            })();
+            if let Some(sensor) = sensor {
+                best.push(sensor);
+            }
+        },
     )?;
-    Ok(cpu_temperature(objects.into_iter().filter_map(|object| {
-        Some(TemperatureSensor {
-            identifier: BSTR::try_from(&property(&object, w!("Identifier")).ok()?)
-                .ok()?
-                .to_string(),
-            name: BSTR::try_from(&property(&object, w!("Name")).ok()?)
-                .ok()?
-                .to_string(),
-            celsius: property(&object, w!("Value"))
-                .ok()
-                .and_then(|value| f64::try_from(&value).ok()),
-        })
-    })))
+    Ok(best.celsius())
 }
 
 fn query_acpi(service: &IWbemServices, zones: &mut ThermalZones) -> Result<Option<f64>> {
-    let objects = query(
+    let values = query(
         service,
         "SELECT InstanceName, CurrentTemperature FROM MSAcpi_ThermalZoneTemperature",
+        Vec::new(),
+        |values, object| {
+            let reading = (|| {
+                let name = BSTR::try_from(&property(&object, w!("InstanceName")).ok()?)
+                    .ok()?
+                    .to_string();
+                let raw = f64::try_from(&property(&object, w!("CurrentTemperature")).ok()?).ok()?;
+                Some((name, raw))
+            })();
+            if let Some(reading) = reading {
+                values.push(reading);
+            }
+        },
     )?;
-    Ok(objects
+    // Only commit thermal-zone history after a complete enumeration. Retain
+    // decoded scalars here, never the provider's much larger native objects.
+    Ok(values
         .into_iter()
-        .filter_map(|object| {
-            let name = BSTR::try_from(&property(&object, w!("InstanceName")).ok()?)
-                .ok()?
-                .to_string();
-            let raw = f64::try_from(&property(&object, w!("CurrentTemperature")).ok()?).ok()?;
-            zones.read(&name, raw, ThermalUnit::Decikelvin)
-        })
+        .filter_map(|(name, raw)| zones.read(&name, raw, ThermalUnit::Decikelvin))
         .max_by(f64::total_cmp))
 }
 
-fn query(service: &IWbemServices, text: &str) -> Result<Vec<IWbemClassObject>> {
+fn query<T>(
+    service: &IWbemServices,
+    text: &str,
+    mut value: T,
+    mut visit: impl FnMut(&mut T, IWbemClassObject),
+) -> Result<T> {
     // SAFETY: synchronous use of apartment-local COM proxies and owned output
-    // slots. Enumeration is bounded; a stalled result is discarded in full.
+    // slots. Each object is reduced and released before fetching the next one.
+    // Enumeration is bounded; errors discard the reduced value in full.
     unsafe {
         let results = service.ExecQuery(
             &BSTR::from("WQL"),
@@ -255,10 +277,10 @@ fn query(service: &IWbemServices, text: &str) -> Result<Vec<IWbemClassObject>> {
             WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
             None,
         )?;
-        let deadline = Instant::now() + Duration::from_millis(500);
-        let mut collected = Vec::new();
+        let mut deadline = Instant::now() + Duration::from_millis(500);
+        let mut count = 0;
         loop {
-            if Instant::now() >= deadline || collected.len() >= 1024 {
+            if Instant::now() >= deadline || count >= 1024 {
                 return Err(windows::core::Error::from_hresult(HRESULT(
                     0x800705b4_u32 as i32,
                 )));
@@ -278,10 +300,15 @@ fn query(service: &IWbemServices, text: &str) -> Result<Vec<IWbemClassObject>> {
                 )));
             }
             if let Some(object) = objects[0].take() {
-                collected.push(object);
+                count += 1;
+                let processing_started = Instant::now();
+                visit(&mut value, object);
+                // The existing 500-ms budget bounds enumeration, not property
+                // decoding, which previously ran after the entire batch was fetched.
+                deadline += processing_started.elapsed();
             }
         }
-        Ok(collected)
+        Ok(value)
     }
 }
 
